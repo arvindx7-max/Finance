@@ -3,9 +3,12 @@
 // trips, specific amounts) lives in the user's rules file, which is stored on the device.
 
 export const SECTIONS = {
-  fixed: 'Fixed / recurring', variable: 'Variable expenses', onetime: 'One-time items',
-  income: 'Income', transfer: 'Outbound transfers', offset: 'Offsetting pairs',
+  income: 'Earned income', fixed: 'Fixed / recurring', variable: 'Variable expenses', onetime: 'One-time items',
+  india: 'Transfers to India', passthrough: 'Pass-through to India',
+  tosav: 'Moved to savings', fromsav: 'Top-ups from savings', offset: 'Offsetting pairs',
 };
+// Sections a user can pick when creating a new line.
+export const USER_SECTIONS = ['fixed', 'variable', 'onetime', 'income', 'india', 'tosav', 'fromsav'];
 
 const L = (id, sec, label, group = '') => ({ id, sec, label, group });
 // Generic line catalog. A rules file can relabel these, regroup them, or add new lines.
@@ -52,13 +55,14 @@ export const BASE_LINES = [
   L('ot.other', 'onetime', 'Other one-time'),
 
   L('in.salary', 'income', 'Monthly salary', 'Salary'),
-  L('in.transfersIn', 'income', 'Transfers received', 'Other income'),
   L('in.employerOther', 'income', 'Employer credit (non-salary)', 'Other income'),
   L('in.cash', 'income', 'Cash deposits', 'Other income'),
   L('in.kindergeld', 'income', 'Kindergeld', 'Kindergeld'),
 
-  L('tr.family', 'transfer', 'Transfers sent', 'Outbound transfers'),
-  L('tr.remit', 'transfer', 'Money transfer service', 'Outbound transfers'),
+  L('ind.remit', 'india', 'Money transfer to India', 'Transfers to India'),
+  L('pt.in', 'passthrough', 'Received to forward to India', 'Transfers to India'),
+  L('sv.out', 'tosav', 'Moved to savings account', 'Savings movements'),
+  L('sv.in', 'fromsav', 'Top-up from savings account', 'Savings movements'),
 
   L('off.other', 'offset', 'Offsetting pair'),
 ];
@@ -68,7 +72,7 @@ export const GENERIC_RULES = [
   ['in.salary', (t) => t.amount > 0 && /SALA LOHN\/GEHALT|LOHN, GEHALT|LOHN\/GEHALT/.test(t.T)],
   ['in.kindergeld', has(/FAMILIENKASSE/)],
   ['in.cash', (t) => t.amount > 0 && /BAREINZAHLUNG/.test(t.T)],
-  ['tr.remit', has(/WESTERN UNION|WISE PAYMENTS|REMITLY/)],
+  ['ind.remit', (t) => t.amount < 0 && /WESTERN UNION|WISE PAYMENTS|REMITLY/.test(t.T)],
   ['fx.rent', (t) => t.amount < 0 && /DAUERAUFTRAG/.test(t.T) && /MIETE|RENT/.test(t.T)],
   ['fx.lifeIns', has(/LEBENSVERSICHERUNG/)],
   ['fx.insurance', has(/VERSICHERUNG|INSURANCE/)],
@@ -107,7 +111,8 @@ export const DEFAULT_SETTINGS = {
   startMonth: null,  // null = earliest month in the data
   vendorRules: {},   // vkey -> lineId (answers from the review screen)
   txRules: {},       // tx id -> lineId (single-booking overrides)
-  trips: [],         // [{ name, from, to }] — restaurant spend in these dates gets its own line
+  trips: [],         // [{ name, from, to, scope: 'dining'|'all' }] — spend in these dates gets its own trip line
+  flagDismissed: {}, // tx id -> true: large bookings confirmed as regular spend
   profile: null,     // the user's rules file
 };
 export const emptyProfile = () => ({ app: 'finance-insights-rules', version: 1, lines: [], rules: [], notes: {}, sheetNames: {}, trips: [], startMonth: null });
@@ -117,6 +122,7 @@ let LINES = BASE_LINES;
 let PROFILE_RULES = { first: [], normal: [] };
 let NOTES = {};
 let SHEETS = {};
+let TRIPS = [];
 export const lines = () => LINES;
 export const lineNote = (id) => NOTES[id] || '';
 export const sheetName = (key, def) => SHEETS[key] || def;
@@ -156,11 +162,17 @@ export function applyProfile(profile) {
 applyProfile(null);
 
 export function lineLabel(id) {
-  if (id && id.startsWith('trip:')) return `Restaurants & dining (${id.slice(5)} trip)`;
+  if (id && id.startsWith('trip:')) {
+    const t = TRIPS.find((x) => x.name === id.slice(5));
+    return t && t.scope === 'all' ? `${t.name} trip (all spend)` : `Restaurants & dining (${id.slice(5)} trip)`;
+  }
   return (LINES.find((l) => l.id === id) || { label: 'Needs review' }).label;
 }
 export function lineMeta(id) {
-  if (id && id.startsWith('trip:')) return { id, sec: 'variable', label: lineLabel(id), group: 'Restaurants & dining' };
+  if (id && id.startsWith('trip:')) {
+    const t = TRIPS.find((x) => x.name === id.slice(5));
+    return { id, sec: 'variable', label: lineLabel(id), group: t && t.scope === 'all' ? 'Trips' : 'Restaurants & dining' };
+  }
   return LINES.find((l) => l.id === id) || null;
 }
 
@@ -177,9 +189,10 @@ export function classify(tx, settings) {
   return null;
 }
 function applyTrip(id, tx, settings) {
-  if (id !== 'v.restaurants') return id;
+  const meta = lineMeta(id);
+  if (!meta || meta.sec !== 'variable') return id;
   const d = tx.cardDate || tx.date;
-  const trip = (settings.trips || []).find((tr) => d >= tr.from && d <= tr.to);
+  const trip = (settings.trips || []).find((tr) => d >= tr.from && d <= tr.to && (tr.scope === 'all' || id === 'v.restaurants'));
   return trip ? `trip:${trip.name}` : id;
 }
 
@@ -188,7 +201,7 @@ export function monthLabel(m, short = false) {
   const [y, mo] = m.split('-').map(Number);
   return new Date(y, mo - 1, 1).toLocaleDateString('en-GB', short ? { month: 'short' } : { month: 'long', year: 'numeric' });
 }
-const r2 = (v) => Math.round(v * 100) / 100;
+const r2 = (v) => Math.round(v * 100) / 100 || 0;
 export const deDate = (iso) => `${iso.slice(8, 10)}.${iso.slice(5, 7)}.${iso.slice(0, 4)}`;
 
 // "first .. last (Nx)" when more than 3 bookings; otherwise list dates, "(x2)" for repeats.
@@ -203,6 +216,7 @@ export function dateSummary(dates) {
 
 export function aggregate(txs, settings) {
   applyProfile(settings.profile);
+  TRIPS = settings.trips || [];
   const start = settings.startMonth || '0000-00';
   const rows = txs.filter((t) => monthOf(t.date) >= start).map((t) => ({ ...t, line: classify(t, settings) }));
   const months = [...new Set(rows.map((t) => monthOf(t.date)))].sort();
@@ -216,22 +230,41 @@ export function aggregate(txs, settings) {
   }
   const used = new Set(rows.map((t) => t.line));
   const order = [];
-  for (const l of LINES) {
+  const tripIds = [...used].filter((u) => u && u.startsWith('trip:')).sort();
+  const lastVar = LINES.reduce((a, l, i) => (l.sec === 'variable' ? i : a), -1);
+  LINES.forEach((l, i) => {
     if (used.has(l.id)) order.push(l);
-    if (l.id === 'v.restaurants') for (const id of [...used].filter((u) => u && u.startsWith('trip:')).sort()) order.push(lineMeta(id));
-  }
+    if (l.id === 'v.restaurants') tripIds.filter((id) => lineMeta(id).group !== 'Trips').forEach((id) => order.push(lineMeta(id)));
+    if (i === lastVar) tripIds.filter((id) => lineMeta(id).group === 'Trips').forEach((id) => order.push(lineMeta(id)));
+  });
   const bySec = (sec, m) => r2(rows.filter((t) => t.line && lineMeta(t.line).sec === sec && (!m || monthOf(t.date) === m)).reduce((s, t) => s + t.amount, 0));
   const summary = months.map((m) => {
-    const income = bySec('income', m);
+    const earned = bySec('income', m);
     const fixed = -bySec('fixed', m), variable = -bySec('variable', m), onetime = -bySec('onetime', m);
-    const transfers = -bySec('transfer', m), offset = bySec('offset', m);
-    const unassigned = r2(rows.filter((t) => !t.line && monthOf(t.date) === m).reduce((s, t) => s + t.amount, 0));
-    const savings = r2(income - fixed - variable - onetime - transfers);
-    return { month: m, income, fixed, variable, onetime, expenses: r2(fixed + variable + onetime), transfers, offset, unassigned, savings,
-      savingsRate: income ? savings / income : 0 };
+    const spent = r2(fixed + variable + onetime);
+    const indiaGross = -bySec('india', m), passThrough = bySec('passthrough', m);
+    const india = r2(indiaGross - passThrough);
+    const saved = r2(earned - spent - india);
+    const toSav = -bySec('tosav', m), fromSav = bySec('fromsav', m);
+    const netToSav = r2(toSav - fromSav);
+    const inMonth = rows.filter((t) => monthOf(t.date) === m);
+    const kept = r2(inMonth.reduce((s, t) => s + t.amount, 0)); // actual balance change, by booking month
+    const unassigned = r2(inMonth.filter((t) => !t.line).reduce((s, t) => s + t.amount, 0));
+    return { month: m, earned, fixed, variable, onetime, spent, indiaGross, passThrough, india, saved,
+      toSav, fromSav, netToSav, kept, unassigned, savingsRate: earned ? saved / earned : 0 };
   });
   const review = rows.filter((t) => !t.line);
-  return { rows, months, cell, order, summary, review };
+  // Possible one-time items: a variable booking far above what is usual for its line.
+  const flags = [];
+  const byLine = {};
+  for (const t of rows) if (t.line && t.amount < 0 && lineMeta(t.line).sec === 'variable') (byLine[t.line] ||= []).push(t);
+  for (const ts of Object.values(byLine)) {
+    if (ts.length < 3) continue;
+    const a = ts.map((t) => -t.amount).sort((x, y) => x - y);
+    const median = a[Math.floor(a.length / 2)];
+    for (const t of ts) if (-t.amount >= 250 && -t.amount >= 3 * median && !(settings.flagDismissed || {})[t.id] && !settings.txRules[t.id]) flags.push({ ...t, median });
+  }
+  return { rows, months, cell, order, summary, review, flags };
 }
 
 // Running-balance reconciliation: every statement must tie on its own and chain to the previous one.

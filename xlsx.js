@@ -3,7 +3,7 @@ import { lineMeta, lineLabel, lineNote, sheetName, monthLabel, dateSummary, SECT
 
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 export const colL = (n) => { let s = ''; n++; while (n) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; };
-const r2 = (v) => Math.round(v * 100) / 100;
+const r2 = (v) => Math.round(v * 100) / 100 || 0;
 
 // style ids (see styles())
 const S = { hdr: 1, sub: 2, bar: 3, barGreen: 4, text: 5, num: 6, dates: 7, totLbl: 8, totNum: 9, note: 10, date: 11, bold: 12, boldNum: 13, pct: 14, legend: 15 };
@@ -170,54 +170,60 @@ export function buildWorkbook(agg, recon, settings) {
   const iTot = monthHeader(is, 'Description', months, vFirst);
   r = 3;
   const bar = (label) => { is.set(0, r, label, S.barGreen); for (let c = 1; c <= iTot + 1; c++) is.set(c, r, '', S.barGreen); r++; };
-  const subtot = {};
-  const block = (title, ids, subLabel, key) => {
-    bar(title);
+  // Writes the lines of a block (amounts shown positive) and a subtotal row; returns { row, vals }.
+  const block = (ids, subLabel) => {
     const start = r;
-    for (const id of ids) { if (!agg.order.find((l) => l.id === id)) continue; lineRow(is, r, lineMeta(id).label, id, months, vFirst, agg, key === 'transfer' ? -1 : 1); r++; }
-    const vals = months.map((m) => r2(ids.reduce((s, id) => s + (agg.cell[`${id}|${m}`]?.amt || 0), 0) * (key === 'transfer' ? -1 : 1)));
+    for (const id of ids) { const c0 = months.some((m) => agg.cell[`${id}|${m}`]); if (!c0) continue; lineRow(is, r, lineLabel(id), id, months, vFirst, agg, Math.sign(sumOf(id)) || 1); r++; }
+    const vals = months.map((m) => r2(Math.abs(ids.reduce((s, id) => s + (agg.cell[`${id}|${m}`]?.amt || 0), 0))));
     if (r === start) { is.set(0, r, '(none)', S.legend); r++; }
-    subtot[key] = r;
-    sumRow(is, r, subLabel, months, vFirst, [`@${start}:@${r - 1}`], vals); r += 2;
-    return vals;
+    const row = r; sumRow(is, r, subLabel, months, vFirst, [`@${start}:@${r - 1}`], vals); r += 2;
+    return { row, vals };
   };
-  // Income sections follow the line groups (Salary, Other income, Kindergeld), then outbound transfers.
-  const incomeLines = agg.order.filter((l) => l.sec === 'income');
-  const groups = [...new Set(incomeLines.map((l) => l.group))];
-  const incomeSubRows = []; const income = months.map(() => 0);
-  groups.forEach((g, gi) => {
-    const ids = incomeLines.filter((l) => l.group === g).map((l) => l.id);
-    const vals = block(g.toUpperCase(), ids, `Subtotal — ${g.replace(/ \(.*\)$/, '')}`, `in${gi}`);
-    incomeSubRows.push(subtot[`in${gi}`]); vals.forEach((v, i) => { income[i] = r2(income[i] + v); });
-  });
-  const trIds = agg.order.filter((l) => l.sec === 'transfer').map((l) => l.id);
-  const trGroup = (agg.order.find((l) => l.sec === 'transfer') || { group: 'Outbound transfers' }).group || 'Outbound transfers';
-  block(trGroup.toUpperCase(), trIds, 'Subtotal — Outbound transfers', 'transfer');
+  const sumOf = (id) => months.reduce((s, m) => s + (agg.cell[`${id}|${m}`]?.amt || 0), 0);
+  const secIds = (sec) => agg.order.filter((l) => l.sec === sec).map((l) => l.id);
+
+  // Earned income, one block per group (salary, other earned income, Kindergeld)
+  const incLines = agg.order.filter((l) => l.sec === 'income');
+  const groups = [...new Set(incLines.map((l) => l.group || 'Earned income'))];
+  const incomeRows = [];
+  groups.forEach((g) => { bar(g.toUpperCase()); incomeRows.push(block(incLines.filter((l) => (l.group || 'Earned income') === g).map((l) => l.id), `Subtotal — ${g.replace(/ \(.*\)$/, '')}`).row); });
+
+  bar('TRANSFERS TO INDIA');
+  const indiaB = block(secIds('india'), 'Sent to India (gross)');
+  const ptB = secIds('passthrough').length ? (() => { bar('LESS: RECEIVED TO FORWARD TO INDIA (not your money)'); return block(secIds('passthrough'), 'Pass-through'); })() : null;
+
+  bar('SAVINGS MOVEMENTS (internal)');
+  const toB = block(secIds('tosav'), 'Moved to savings');
+  const fromB = block(secIds('fromsav'), 'Top-ups back from savings');
+
   bar('MONTHLY SAVINGS SUMMARY');
-  const rowIncome = r;
   const xref = (sheet, row, offset) => (c) => `'${sheet}'!${colL(c + offset)}${row}`;
   const put = (label, vals, fn, style = [S.bold, S.boldNum]) => {
     is.set(0, r, label, style[0]);
     months.forEach((m, i) => { const c = vFirst + i * 2; is.set(c, r, r2(vals[i]), style[1], fn(c)); is.set(c + 1, r, '', style[0]); });
     const t = vFirst + months.length * 2;
     const refs = months.map((_, i) => `${colL(vFirst + i * 2)}${r}`);
-    is.set(t, r, r2(vals.reduce((a, b) => a + b, 0)), style[1], refs.length ? `SUM(${refs.join(',')})` : null);
-    r++;
+    is.set(t, r, r2(vals.reduce((a2, b2) => a2 + b2, 0)), style[1], refs.length ? `SUM(${refs.join(',')})` : null);
+    return r++;
   };
-  put('Total income', income, (c) => (incomeSubRows.length ? incomeSubRows.map((rr) => `${colL(c)}${rr}`).join('+') : '0'));
-  const rowFixed = r; put(`Fixed / recurring (${fixedName})`, monthVals(agg, 'fixed'), (c) => xref(fixedName, fixedTotalRow, mFirst - vFirst)(c));
-  const rowVar = r; put('Variable expenses', monthVals(agg, 'variable'), (c) => xref('Variable Expenses', varTotalRow, 0)(c));
-  const rowOt = r; put('One-time items', monthVals(agg, 'onetime'), (c) => xref('One-Time', otTotalRow, 0)(c));
-  const rowExp = r; put('Total expenses (fixed + variable + one-time)', monthVals(agg, 'expenses'), (c) => `${colL(c)}${rowFixed}+${colL(c)}${rowVar}+${colL(c)}${rowOt}`);
-  const rowTr = r; put('Outbound transfers', monthVals(agg, 'transfers'), (c) => `${colL(c)}${subtot.transfer}`);
-  const rowSav = r; put('MONTHLY SAVINGS', monthVals(agg, 'savings'), (c) => `${colL(c)}${rowIncome}-${colL(c)}${rowExp}-${colL(c)}${rowTr}`, [S.totLbl, S.totNum]);
-  // savings rate
+  const S_ = (k) => agg.summary.map((x) => x[k]);
+  const rowEarned = put('Earned income', S_('earned'), (c) => (incomeRows.length ? incomeRows.map((rr) => `${colL(c)}${rr}`).join('+') : '0'));
+  const rowFixed = put(`Fixed / recurring (${fixedName})`, S_('fixed'), (c) => xref(fixedName, fixedTotalRow, mFirst - vFirst)(c), [S.text, S.num]);
+  const rowVar = put('Variable expenses', S_('variable'), (c) => xref('Variable Expenses', varTotalRow, 0)(c), [S.text, S.num]);
+  const rowOt = put('One-time items', S_('onetime'), (c) => xref('One-Time', otTotalRow, 0)(c), [S.text, S.num]);
+  const rowSpent = put('Total spent (fixed + variable + one-time)', S_('spent'), (c) => `${colL(c)}${rowFixed}+${colL(c)}${rowVar}+${colL(c)}${rowOt}`);
+  const rowIndia = put('Sent to India from your own money', S_('india'), (c) => `${colL(c)}${indiaB.row}${ptB ? `-${colL(c)}${ptB.row}` : ''}`);
+  const rowSav = put('SAVED', S_('saved'), (c) => `${colL(c)}${rowEarned}-${colL(c)}${rowSpent}-${colL(c)}${rowIndia}`, [S.totLbl, S.totNum]);
   is.set(0, r, 'Savings rate', S.totLbl);
-  months.forEach((m, i) => { const c = vFirst + i * 2; const s = agg.summary[i]; is.set(c, r, s.income ? r2(s.savings / s.income * 1000) / 1000 : 0, S.pct, `IF(${colL(c)}${rowIncome}=0,0,${colL(c)}${rowSav}/${colL(c)}${rowIncome})`); is.set(c + 1, r, '', S.totLbl); });
+  months.forEach((m, i) => { const c = vFirst + i * 2; const x = agg.summary[i]; is.set(c, r, x.earned ? Math.round(x.saved / x.earned * 1000) / 1000 : 0, S.pct, `IF(${colL(c)}${rowEarned}=0,0,${colL(c)}${rowSav}/${colL(c)}${rowEarned})`); is.set(c + 1, r, '', S.totLbl); });
   r += 2;
-  is.set(0, r++, 'Savings = Total income − Total expenses (fixed + variable + one-time) − Outbound transfers.', S.legend);
-  is.set(0, r++, 'Refunds and reimbursements are not income; they are netted against the spend they reverse.', S.legend);
-  is.set(0, r++, 'Each month\'s savings equals the change in the account balance for that month (see Reconciliation).', S.legend);
+  is.set(0, r++, 'Where the saved money went', S.bold);
+  const rowNet = put('Net moved to savings (moved − top-ups)', S_('netToSav'), (c) => `${colL(c)}${toB.row}-${colL(c)}${fromB.row}`, [S.text, S.num]);
+  put('Kept in this account', months.map((_, i) => r2(agg.summary[i].saved - agg.summary[i].netToSav)), (c) => `${colL(c)}${rowSav}-${colL(c)}${rowNet}`, [S.text, S.num]);
+  r += 1;
+  is.set(0, r++, 'Saved = Earned income − Total spent − Sent to India from your own money.', S.legend);
+  is.set(0, r++, 'Transfers to and from your savings account are internal: they show where savings went, not income or cost.', S.legend);
+  is.set(0, r++, 'Kept in this account equals the change in the account balance for the month (see Reconciliation).', S.legend);
 
   // ---- Reconciliation ----
   const rc = new Sheet('Reconciliation'); sheets.push(rc);

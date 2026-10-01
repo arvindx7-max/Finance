@@ -1,5 +1,5 @@
 // Offline cache. Bump VERSION when any app file changes.
-const VERSION = 'fin-v3';
+const VERSION = 'fin-v4';
 const FILES = ['./', './index.html', './app.js', './parser.js', './model.js', './xlsx.js', './manifest.webmanifest',
   './pdf.min.mjs', './pdf.worker.min.mjs', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES)).then(() => self.skipWaiting())); });
