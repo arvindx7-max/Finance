@@ -189,7 +189,7 @@ input[type=month], input[type=date], input[name=name], select { font: inherit; f
 .recon-list div span { font-weight: 650; }
 .recon-list li.ok div span { color: var(--lagoon); } .recon-list li.bad div span { color: var(--coral); }
 .recon-list p { margin: 4px 0 0; font-size: 12px; color: var(--muted); font-family: var(--num); }
-#sheet-body h3 { font-size: 14px; margin: 18px 0 6px; color: var(--muted); font-weight: 650; }
+#sheet-body h3, .card h3 { font-size: 14px; margin: 18px 0 6px; color: var(--muted); font-weight: 650; }
 .stack { display: flex; flex-direction: column; gap: 12px; }
 .stack label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
 .stack input, .stack select { font: inherit; font-size: 16px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); color: var(--ink); }
@@ -204,6 +204,15 @@ input[type=search] { width: 100%; font: inherit; font-size: 16px; padding: 11px 
 .results button { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 12px; border: 0; background: none; padding: 11px 14px; border-bottom: 1px solid var(--line); text-align: left; }
 .results small { display: block; font-size: 12px; color: var(--muted); }
 .results strong { font-family: var(--num); } .results strong.pos { color: var(--lagoon); }
+
+/* ---------- cloud status ---------- */
+.topbar .row { flex-wrap: nowrap; }
+.cloud-pill { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 7px 12px; font-size: 13px; font-weight: 600; color: var(--muted); white-space: nowrap; }
+.cloud-pill::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--saffron); margin-right: 7px; vertical-align: 1px; }
+.cloud-pill.ok::before { background: var(--lagoon); }
+.cloud-pill.bad { color: var(--coral); } .cloud-pill.bad::before { background: var(--coral); }
+.stack input[type=password] { letter-spacing: .08em; }
+.stack label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--ink); }
 
 /* ---------- navigation ---------- */
 .tabbar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-around; background: color-mix(in srgb, var(--surface) 86%, transparent); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); border-top: 1px solid var(--line); padding: 6px 4px calc(6px + env(safe-area-inset-bottom)); z-index: 5; }
@@ -259,6 +268,7 @@ input[type=search] { width: 100%; font: inherit; font-size: 16px; padding: 11px 
 <main id="main" class="app"></main>
 <div id="sheet" hidden><div id="sheet-body"></div></div>
 <div id="toast" role="status" hidden></div>
+<script src="config.js"></script>
 <script type="module" src="app.js"></script>
 </body>
 </html>

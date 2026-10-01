@@ -1,6 +1,7 @@
 import { parsePdf, parseCsv } from './parser.js';
 import { aggregate, reconcile, DEFAULT_SETTINGS, emptyProfile, lines, SECTIONS, USER_SECTIONS, lineLabel, lineMeta, monthLabel, deDate, monthOf } from './model.js';
 import { buildWorkbook } from './xlsx.js';
+import * as C from './cloud.js';
 
 // ---------------- storage (IndexedDB) ----------------
 const DB_NAME = 'finance-insights';
@@ -45,16 +46,174 @@ const ensureProfile = () => (state.settings.profile ||= emptyProfile());
 async function change(label, fn) {
   state.undo.push(JSON.stringify(state.settings));
   if (state.undo.length > 15) state.undo.shift();
+  const before = JSON.parse(JSON.stringify(state.settings));
   fn(state.settings);
+  stampDiff(before, state.settings);
   await saveSettings(); await kvSet('undo', state.undo);
-  recompute(); render();
+  recompute(); render(); markChanged();
   toast(label, true);
 }
 async function undo() {
   const prev = state.undo.pop(); if (!prev) return;
-  state.settings = JSON.parse(prev);
+  const before = state.settings; state.settings = JSON.parse(prev); stampDiff(before, state.settings);
   await saveSettings(); await kvSet('undo', state.undo);
-  recompute(); render(); toast('Undone');
+  recompute(); render(); markChanged(); toast('Undone');
+}
+
+// ---------------- change timestamps (so two devices can merge) ----------------
+const MAPS = [['vendorRules', 'v'], ['txRules', 't'], ['flagDismissed', 'f']];
+const WHOLE = ['profile', 'trips', 'startMonth'];
+const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+// Removed answers are kept as null so the removal itself can sync.
+function stampDiff(before, after) {
+  const now = Date.now(); after.stamps = { ...(before.stamps || {}), ...(after.stamps || {}) };
+  for (const [m, p] of MAPS) {
+    const b = before[m] || {}; const a = (after[m] ||= {});
+    for (const k of new Set([...Object.keys(b), ...Object.keys(a)])) {
+      if (!(k in a)) a[k] = null;
+      if (!same(b[k], a[k])) after.stamps[`${p}:${k}`] = now;
+    }
+  }
+  for (const w of WHOLE) if (!same(before[w], after[w])) after.stamps[w] = now;
+}
+const live = (obj) => Object.entries(obj || {}).filter(([, v]) => v !== null && v !== undefined);
+function mergeSettings(l, r) {
+  const out = { ...fresh(), ...r, ...l, stamps: {} };
+  const st = (s, k) => (s.stamps || {})[k] || 0;
+  const pick = (k, inL, inR) => { const ls = st(l, k), rs = st(r, k); out.stamps[k] = Math.max(ls, rs); return rs > ls ? 'r' : ls > rs ? 'l' : (inL ? 'l' : inR ? 'r' : 'l'); };
+  for (const [m, p] of MAPS) {
+    out[m] = {}; const L = l[m] || {}, R = r[m] || {};
+    for (const k of new Set([...Object.keys(L), ...Object.keys(R)])) { const side = pick(`${p}:${k}`, k in L, k in R); out[m][k] = (side === 'r' ? R[k] : L[k]) ?? null; }
+  }
+  for (const w of WHOLE) { const side = pick(w, l[w] !== undefined, r[w] !== undefined); out[w] = side === 'r' ? r[w] : l[w]; }
+  return out;
+}
+// Bookings: same id = same booking; otherwise matched by date + amount + vendor, count for count.
+function mergeTx(local, remote) {
+  const ids = new Set(local.map((t) => t.id)); const key = (t) => `${t.date}|${t.amount}|${t.vkey}`;
+  const lc = {}; for (const t of local) lc[key(t)] = (lc[key(t)] || 0) + 1;
+  const groups = {}; for (const t of remote) (groups[key(t)] ||= []).push(t);
+  const add = [];
+  for (const [k, rs] of Object.entries(groups)) {
+    let room = rs.length - (lc[k] || 0);
+    for (const t of rs) { if (room <= 0) break; if (ids.has(t.id)) continue; add.push(t); ids.add(t.id); room--; }
+  }
+  return [...local, ...add];
+}
+
+// ---------------- cloud sync (Google Drive, encrypted) ----------------
+const cfg = window.FIN_CONFIG || {};
+const cloud = { meta: null, key: null, token: null, status: 'off', msg: '', busy: false, dirty: false };
+const cloudReady = () => !!cfg.googleClientId;
+const tokenOk = () => cloud.token && cloud.token.exp > Date.now();
+async function loadCloud() {
+  cloud.meta = await kvGet('cloud', null);
+  cloud.key = await kvGet('cloudKey', null);
+  cloud.token = await kvGet('gtoken', null);
+  cloud.dirty = !!(cloud.meta && cloud.meta.dirty);
+  refreshStatus();
+}
+function refreshStatus() {
+  if (!cloudReady()) cloud.status = 'off';
+  else if (!cloud.meta || !cloud.meta.fileId) cloud.status = tokenOk() ? 'novault' : 'signedout';
+  else if (!cloud.key) cloud.status = 'locked';
+  else if (!tokenOk()) cloud.status = 'signin';
+  else if (cloud.status !== 'error' && cloud.status !== 'syncing') cloud.status = 'synced';
+}
+const saveCloudMeta = () => kvSet('cloud', { ...cloud.meta, dirty: cloud.dirty });
+const statePayload = () => ({ tx: state.tx, statements: state.statements, settings: state.settings });
+async function persistAll() {
+  await clear('tx'); await putMany('tx', state.tx);
+  await clear('statements'); await putMany('statements', state.statements);
+  await saveSettings();
+}
+// Pull the vault, merge it into this device, push the result back if anything here was new.
+async function syncNow(quiet = false) {
+  refreshStatus();
+  if (cloud.status !== 'synced' || cloud.busy) { if (!quiet) render(); return; }
+  cloud.busy = true; cloud.status = 'syncing'; if (!quiet) render(); setPill();
+  try {
+    const m = await C.fileMeta(cloud.token.token, cloud.meta.fileId);
+    let remote = null;
+    if (m.modifiedTime !== cloud.meta.remoteModified) remote = await C.unseal(await C.download(cloud.token.token, cloud.meta.fileId), cloud.key);
+    let changedHere = cloud.dirty;
+    if (remote) {
+      const before = JSON.stringify(statePayload());
+      state.tx = mergeTx(state.tx, remote.tx || []);
+      const ids = new Set(state.statements.map((s) => s.id));
+      state.statements = [...state.statements, ...(remote.statements || []).filter((s) => !ids.has(s.id))];
+      state.settings = mergeSettings(state.settings, remote.settings || {});
+      await persistAll(); recompute();
+      const after = JSON.stringify(statePayload());
+      const remoteJson = JSON.stringify({ tx: remote.tx, statements: remote.statements, settings: remote.settings });
+      changedHere = changedHere || (after !== remoteJson && after !== before) || state.tx.length !== (remote.tx || []).length;
+      cloud.meta.remoteModified = m.modifiedTime;
+    }
+    if (changedHere || !remote && cloud.dirty) {
+      const res = await C.updateVault(cloud.token.token, cloud.meta.fileId, await C.seal(statePayload(), cloud.key, cloud.meta.salt, cloud.meta.iter));
+      cloud.meta.remoteModified = res.modifiedTime;
+    }
+    cloud.dirty = false; cloud.meta.lastSync = new Date().toISOString(); await saveCloudMeta();
+    cloud.status = 'synced'; cloud.msg = '';
+  } catch (e) {
+    if (e.code === 401) { cloud.token = null; await kvSet('gtoken', null); }
+    cloud.status = e.code === 401 ? 'signin' : 'error'; cloud.msg = e.message;
+  } finally { cloud.busy = false; render(); }
+}
+let pushTimer;
+function markChanged() {
+  if (!cloud.meta || !cloud.meta.fileId) return;
+  cloud.dirty = true; saveCloudMeta(); clearTimeout(pushTimer); pushTimer = setTimeout(() => syncNow(true), 1500); setPill();
+}
+async function createVaultFlow(pass, remember) {
+  const salt = C.newSalt(); const key = await C.deriveKey(pass, salt);
+  const res = await C.createVault(cloud.token.token, await C.seal(statePayload(), key, salt));
+  cloud.meta = { fileId: res.id, salt, iter: 310000, remoteModified: res.modifiedTime, lastSync: new Date().toISOString(), owner: true };
+  cloud.key = key; cloud.dirty = false; await saveCloudMeta();
+  if (remember) await kvSet('cloudKey', key);
+}
+// Unlock an existing vault (yours on another device, or one shared with you) and merge it into this device.
+async function unlockFlow(pass, remember) {
+  const text = await C.download(cloud.token.token, cloud.meta.fileId);
+  const head = C.vaultHeader(text);
+  const key = await C.deriveKey(pass, head.salt, head.iter);
+  await C.unseal(text, key); // throws on a wrong passphrase
+  cloud.meta.salt = head.salt; cloud.meta.iter = head.iter; cloud.meta.remoteModified = null;
+  cloud.key = key; cloud.dirty = state.tx.length > 0; await saveCloudMeta();
+  if (remember) await kvSet('cloudKey', key);
+  refreshStatus(); await syncNow();
+}
+async function chooseVault() {
+  const files = await C.findVault(cloud.token.token);
+  if (files.length) { cloud.meta = { fileId: files[0].id, owner: files[0].ownedByMe }; await saveCloudMeta(); refreshStatus(); render(); return; }
+  render();
+}
+function setPill() { const p = document.querySelector('.cloud-pill'); if (p) p.outerHTML = cloudPill(); }
+function cloudPill() {
+  if (!cloudReady() || cloud.status === 'off') return '';
+  const ago = cloud.meta && cloud.meta.lastSync ? Math.max(0, Math.round((Date.now() - new Date(cloud.meta.lastSync)) / 60000)) : null;
+  const txt = { syncing: 'Syncing…', synced: cloud.dirty ? 'Saving…' : ago === null ? 'Synced' : ago < 1 ? 'Synced just now' : ago < 60 ? `Synced ${ago} min ago` : 'Synced', signin: 'Sign in to sync', locked: 'Vault locked', signedout: 'Set up sync', novault: 'Set up sync', error: 'Sync problem' }[cloud.status] || '';
+  return `<button class="cloud-pill ${cloud.status === 'synced' ? 'ok' : cloud.status === 'error' ? 'bad' : ''}" data-tab="data">${txt}</button>`;
+}
+function cloudCard() {
+  if (!cloudReady()) return `<section class="card wide"><h2>Cloud sync</h2><p class="fine">Not set up. Add your Google IDs to config.js on GitHub to sync this data, encrypted, through your Google Drive.</p></section>`;
+  const s = cloud.status; let body = '';
+  if (s === 'signedout') body = `<p class="fine">Sign in with Google to keep this data in your Drive, encrypted with a passphrase only you know.</p><button class="btn primary" data-act="gsignin">Sign in with Google</button>`;
+  else if (s === 'novault') body = `<p class="fine">No vault of yours was found in this Google account.</p>
+    ${cfg.googleApiKey ? '<p class="fine">Someone shared their vault with you? Open it here.</p><button class="btn primary" data-act="pickvault">Open a shared vault</button>' : ''}
+    <h3>Or create a new vault from the data on this device</h3>
+    <form class="stack" data-act="createvault"><label>Choose a passphrase (at least 10 characters)<input type="password" name="p1" minlength="10" required autocomplete="new-password"></label><label>Repeat it<input type="password" name="p2" minlength="10" required autocomplete="new-password"></label>
+    <label class="check"><input type="checkbox" name="remember" checked> Remember on this device</label>
+    <p class="fine">Write the passphrase down somewhere safe. It cannot be recovered: without it the vault cannot be opened, by you or anyone.</p>
+    <button class="btn${cfg.googleApiKey ? '' : ' primary'}">Create encrypted vault</button></form>`;
+  else if (s === 'locked') body = `<p class="fine">Enter the vault passphrase to sync this device.</p>
+    <form class="stack" data-act="unlock"><label>Passphrase<input type="password" name="p" required autocomplete="current-password"></label><label class="check"><input type="checkbox" name="remember" checked> Remember on this device</label><button class="btn primary">Unlock and sync</button></form>
+    <button class="link" data-act="forgetvault">Use a different vault</button>`;
+  else if (s === 'signin') body = `<p class="fine">Google sign-in lasts about an hour. Sign in again to sync${cloud.dirty ? '; your latest changes are waiting' : ''}.</p><button class="btn primary" data-act="gsignin">Sign in again</button>`;
+  else body = `<p class="fine">${s === 'error' ? `<span class="bad">${h(cloud.msg)}</span> ` : ''}Encrypted vault in Google Drive (${cloud.meta.owner === false ? 'shared with you' : 'yours'}). Changes on this device sync automatically.</p>
+    <div class="row"><button class="btn primary" data-act="syncnow">Sync now</button><button class="btn" data-act="lockvault">Lock this device</button><button class="btn warn" data-act="disconnect">Disconnect</button></div>
+    ${cloud.meta.owner !== false ? '<p class="fine">To share: in Google Drive, share the file finance-vault.json with your wife (Editor), then give her the passphrase in person.</p>' : ''}`;
+  return `<section class="card wide"><h2>Cloud sync</h2>${body}</section>`;
 }
 
 // ---------------- import ----------------
@@ -121,6 +280,7 @@ async function importFiles(files) {
     }
   } finally { hideBusy(); }
   recompute(); render();
+  if (report.added || report.files.length) markChanged();
   showImportReport(report);
 }
 
@@ -129,20 +289,21 @@ async function loadRules(j) {
   if (!Array.isArray(j.rules) || !Array.isArray(j.lines)) throw new Error('rules file is missing its "rules" or "lines" list');
   for (const r of j.rules) for (const p of [...(r.any || []), ...(r.all || []), ...(r.none || [])]) new RegExp(p, 'i'); // fail early on a bad pattern
   const { vendorAnswers = {}, bookingAnswers = {}, dismissed = {}, ...profile } = j;
-  const s = state.settings;
+  const s = state.settings; const before = JSON.parse(JSON.stringify(s));
   s.profile = profile;
   if (Array.isArray(j.trips)) s.trips = j.trips;
   if (j.startMonth) s.startMonth = j.startMonth;
   s.vendorRules = { ...s.vendorRules, ...vendorAnswers };
   s.txRules = { ...s.txRules, ...bookingAnswers };
   s.flagDismissed = { ...s.flagDismissed, ...dismissed };
+  stampDiff(before, s);
   await saveSettings();
   return `your rules loaded (${j.rules.length} rules, ${j.lines.length} line names, ${Object.keys(vendorAnswers).length} vendor answers)`;
 }
 function rulesPayload() {
   const s = state.settings;
   return { ...(s.profile || emptyProfile()), trips: s.trips, startMonth: s.startMonth,
-    vendorAnswers: s.vendorRules, bookingAnswers: s.txRules, dismissed: s.flagDismissed };
+    vendorAnswers: Object.fromEntries(live(s.vendorRules)), bookingAnswers: Object.fromEntries(live(s.txRules)), dismissed: Object.fromEntries(live(s.flagDismissed)) };
 }
 const exportRules = () => deliver(new Blob([JSON.stringify(rulesPayload(), null, 2)], { type: 'application/json' }), 'my-rules.json');
 
@@ -163,8 +324,8 @@ async function restoreBackup(p) {
   await putMany('tx', p.tx); await putMany('statements', p.statements || []);
   state.tx = p.tx; state.statements = p.statements || [];
   const local = state.settings; const inc = { ...fresh(), ...(p.settings || {}) };
-  const keptV = Object.keys(local.vendorRules).filter((k) => !(k in inc.vendorRules)).length;
-  const keptT = Object.keys(local.txRules).filter((k) => !(k in inc.txRules)).length;
+  const keptV = live(local.vendorRules).filter(([k]) => !(k in (inc.vendorRules || {}))).length;
+  const keptT = live(local.txRules).filter(([k]) => !(k in (inc.txRules || {}))).length;
   inc.vendorRules = { ...local.vendorRules, ...inc.vendorRules };
   inc.txRules = { ...local.txRules, ...inc.txRules };
   inc.flagDismissed = { ...local.flagDismissed, ...inc.flagDismissed };
@@ -174,7 +335,7 @@ async function restoreBackup(p) {
     const have = new Set(inc.profile.lines.map((l) => l.id));
     inc.profile.lines = [...inc.profile.lines, ...localOwn.filter((l) => !have.has(l.id))];
   }
-  state.settings = inc; await saveSettings();
+  stampDiff(local, inc); state.settings = inc; await saveSettings();
   return `backup restored (${p.tx.length} bookings)${keptV + keptT ? `; kept ${keptV + keptT} answer${keptV + keptT > 1 ? 's' : ''} made on this phone` : ''}`;
 }
 // iOS: the share sheet lets the file go to Files / iCloud Drive. Elsewhere: plain download.
@@ -225,7 +386,7 @@ function closeSheet() {
 // ---------------- render ----------------
 function render() {
   document.querySelectorAll('.tabbar button').forEach((b) => b.setAttribute('aria-current', b.dataset.tab === state.tab ? 'page' : 'false'));
-  const n = state.agg.review.length + state.agg.flags.length;
+  const n = state.agg.review.length + state.agg.flags.length + state.agg.passFlags.length;
   $('#review-badge').textContent = n; $('#review-badge').hidden = !n;
   const main = $('#main');
   if (!state.tx.length && state.tab !== 'data') { main.innerHTML = emptyView(); return; }
@@ -243,7 +404,7 @@ function emptyView() {
 }
 function backupBanner() {
   const d = daysSince(state.lastBackup);
-  if (d !== null && d < 7) return '';
+  if ((d !== null && d < 7) || (cloud.meta && cloud.meta.fileId && cloud.key)) return '';
   return `<button class="banner" data-act="backup">${d === null ? 'No backup yet.' : `Last backup ${d} days ago.`} <u>Export backup</u></button>`;
 }
 
@@ -289,9 +450,9 @@ function applyTheme(t) {
 }
 function isDark() { return document.documentElement.dataset.theme === 'dark' || (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches); }
 function topbar(title) {
-  return `<header class="topbar"><h1>${h(title)}</h1><button class="icon-btn" data-act="theme" aria-label="Switch to ${isDark() ? 'light' : 'dark'} theme">${isDark()
+  return `<header class="topbar"><h1>${h(title)}</h1><div class="row">${cloudPill()}<button class="icon-btn" data-act="theme" aria-label="Switch to ${isDark() ? 'light' : 'dark'} theme">${isDark()
     ? '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>'
-    : '<svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></svg>'}</button></header>`;
+    : '<svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></svg>'}</button></div></header>`;
 }
 
 // ---------------- overview ----------------
@@ -311,7 +472,7 @@ function overviewView() {
   return `${topbar('Overview')}${backupBanner()}${periodPicker()}
   <div class="overview">
   <section class="hero">
-    <div class="hero-head"><p>${h(periodLabel(p.key, p.mode))}</p><span class="badge${s.saved < 0 ? ' neg' : ''}">${s.saved < 0 ? 'Spent more than earned' : `${rate}% of earnings saved`}</span></div>
+    <div class="hero-head"><p>${h(periodLabel(p.key, p.mode))}</p><span class="badge${s.saved < 0 ? ' neg' : ''}">${s.saved >= 0 ? `${rate}% of earnings saved` : s.spent > s.earned ? 'Spent more than earned' : 'Sent more to India than you saved'}</span></div>
     <div class="saved-fig${s.saved < 0 ? ' neg' : ''}" data-count="${s.saved}">${eur(s.saved)}</div>
     <p class="saved-cap">saved${p.mode === 'all' ? ' in total' : ''}</p>
     <div class="river" role="img" aria-label="How earned income was used">${river}</div>
@@ -329,6 +490,7 @@ function overviewView() {
       <div><span>Kept in this account</span><b>${eur(s.kept)}</b></div>
     </div>
     ${tie === null ? '<p class="seal">No statement for this period yet</p>' : `<p class="seal ${tie ? 'ok' : 'bad'}">${tie ? `Ties to ${rec.length > 1 ? `${rec.length} statements` : 'the statement'}: ${eur(rec[0].open)} → ${eur(rec[rec.length - 1].close)}` : 'A statement in this period does not tie (see Data)'}</p>`}
+    ${state.agg.passFlags.some((t) => ms.includes(monthOf(t.date))) ? '<button class="seal bad" data-tab="review">Was money from savings forwarded to India? Answer in Review</button>' : ''}
     ${pending ? `<button class="seal bad" data-tab="review">${pending} booking${pending > 1 ? 's' : ''} (${eur(s.unassigned)}) still need review</button>` : ''}
   </section>
   <div class="chart-grid">
@@ -506,19 +668,22 @@ function oneTimeSheet(txId) {
     <button type="button" class="btn" data-act="close">Cancel</button>
   </form>`);
 }
-async function createLine({ label, sec, group }) {
+function createLine(s, { label, sec, group }) {
   const id = `c.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
-  ensureProfile().lines.push({ id, sec, label, group: sec === 'variable' ? group : '' });
+  (s.profile ||= emptyProfile()).lines = [...(s.profile.lines || []), { id, sec, label, group: sec === 'variable' ? group : '' }];
   return id;
 }
 
 // ---------------- review ----------------
 function reviewView() {
-  const r = state.agg.review; const f = state.agg.flags;
-  if (!r.length && !f.length) return `${topbar('Review')}<section class="empty small"><h1>Nothing to review</h1><p>Every booking matched a rule or one of your answers, and nothing looks like a one-time spend.</p></section>`;
+  const r = state.agg.review; const f = state.agg.flags; const pf = state.agg.passFlags;
+  const passHtml = pf.length ? `<section class="pad"><h1 class="h1">Forwarded to India?</h1><p class="fine">Money came in from your savings account in a month when you also sent money to India. If you passed it on, it is not a top-up and does not reduce your savings.</p></section>
+  ${pf.map((t) => `<section class="card flag"><div><b>${h(t.vendor)}</b><span>${deDate(t.date)}, ${eur(t.india)} sent to India that month</span></div><strong class="pos">${eur(t.amount)}</strong>
+    <div class="row"><button class="btn primary" data-passyes="${h(t.id)}">Yes, forwarded</button><button class="btn" data-dismiss="${h(t.id)}">No, a top-up</button></div></section>`).join('')}` : '';
+  if (!r.length && !f.length && !pf.length) return `${topbar('Review')}<section class="empty small"><h1>Nothing to review</h1><p>Every booking matched a rule or one of your answers, and nothing looks like a one-time spend.</p></section>`;
   const byV = {};
   for (const t of r) (byV[t.vkey] ||= []).push(t);
-  return `${topbar('Review')}${r.length ? `<section class="pad"><h1 class="h1">Unknown vendors</h1><p class="fine">Pick a line once; with "Apply to every booking" ticked, the app uses it for this vendor from now on.</p></section>
+  return `${topbar('Review')}${passHtml}${r.length ? `<section class="pad"><h1 class="h1">Unknown vendors</h1><p class="fine">Pick a line once; with "Apply to every booking" ticked, the app uses it for this vendor from now on.</p></section>
   ${Object.values(byV).map((ts) => `<section class="card">${txList(ts.slice(0, 1), true)}${ts.length > 1 ? `<p class="fine">${ts.length} bookings from this vendor: ${ts.map((t) => eur(t.amount)).join(', ')}</p>` : ''}</section>`).join('')}` : ''}
   ${f.length ? `<section class="pad"><h1 class="h1">Possible one-time items</h1><p class="fine">These are at least three times the usual amount for their line.</p></section>
   ${f.map((t) => `<section class="card flag"><div><b>${h(t.vendor)}</b><span>${deDate(t.date)} · ${h(lineLabel(t.line))} · usually around ${eur(t.median)}</span></div><strong>${eur(t.amount)}</strong>
@@ -537,10 +702,10 @@ function dataView() {
     return `<li class="${ok ? 'ok' : 'bad'}"><div><b>Balance on ${deDate(c.date)} (CSV)</b><span>${ok ? 'Ties' : `Off by ${eur(computed - c.close)}`}</span></div><p>Computed ${n2(computed)} · bank ${n2(c.close)}</p></li>`;
   }).join('');
   const s = state.settings; const d = daysSince(state.lastBackup);
-  const nAns = Object.keys(s.vendorRules).length + Object.keys(s.txRules).length;
+  const nAns = live(s.vendorRules).length + live(s.txRules).length;
   const own = (s.profile?.lines || []).filter((l) => l.id.startsWith('c.')).length;
   const theme = currentTheme();
-  return `${topbar('Data')}<div class="data-grid"><section class="card">
+  return `${topbar('Data')}<div class="data-grid">${cloudCard()}<section class="card">
     <h2>Add statements</h2>
     <p class="fine">PDF Kontoauszug or CSV export. Overlapping files are fine: bookings already stored are skipped.</p>
     <label class="btn primary">Choose files<input type="file" accept=".pdf,.csv,.json,application/pdf,text/csv,application/json" multiple data-act="import" hidden></label>
@@ -589,10 +754,10 @@ function dataView() {
 
 function manageSheet() {
   const s = state.settings;
-  const v = Object.entries(s.vendorRules);
-  const b = Object.entries(s.txRules);
+  const v = live(s.vendorRules);
+  const b = live(s.txRules);
   const own = (s.profile?.lines || []).filter((l) => l.id.startsWith('c.'));
-  const nDis = Object.keys(s.flagDismissed || {}).length;
+  const nDis = live(s.flagDismissed).length;
   const usage = (id) => state.agg.rows.filter((t) => t.line === id).length;
   sheet(`<h2>Your answers and lines</h2>
   <h3>Vendor answers (${v.length})</h3>
@@ -612,7 +777,7 @@ function showImportReport(r) {
     <ul class="report">${r.files.map((f) => `<li>${h(f)}</li>`).join('')}${r.errors.map((e) => `<li class="bad">${h(e)}</li>`).join('')}</ul>
     ${r.added || r.dup ? `<p>${r.added} new booking${r.added === 1 ? '' : 's'} added${r.dup ? `, ${r.dup} duplicate${r.dup === 1 ? '' : 's'} skipped` : ''}.${review ? ` ${review} need${review === 1 ? 's' : ''} review.` : ''}</p>` : ''}
     ${r.added ? '<p class="fine">Save a backup now so these bookings survive if Safari clears its storage.</p><button class="btn primary" data-act="backup">Export backup</button>' : ''}
-    ${review || state.agg.flags.length ? '<button class="btn" data-act="goreview">Open Review</button>' : ''}
+    ${review || state.agg.flags.length || state.agg.passFlags.length ? '<button class="btn" data-act="goreview">Open Review</button>' : ''}
     <button class="btn" data-act="close">Done</button>`);
 }
 
@@ -633,6 +798,7 @@ document.addEventListener('click', async (e) => {
   }
   if (ds.tx) { const t = txById(ds.tx); sheet(`<h2>${h(t.vendor)}</h2>${txList([t])}<button class="btn" data-act="close">Done</button>`); return; }
   if (ds.onetime) { oneTimeSheet(ds.onetime); return; }
+  if (ds.passyes) { const id = ds.passyes; await change('Marked as forwarded to India', (s) => { s.txRules[id] = 'pt.in'; }); return; }
   if (ds.dismiss) { const id = ds.dismiss; await change('Kept as regular spend', (s) => { (s.flagDismissed ||= {})[id] = true; }); return; }
   if (ds.deltrip) { const i = +ds.deltrip; await change('Trip removed', (s) => { s.trips.splice(i, 1); }); return; }
   if (ds.delvendor) { const k = ds.delvendor; await change('Vendor answer removed', (s) => { delete s.vendorRules[k]; }); manageSheet(); return; }
@@ -657,6 +823,14 @@ document.addEventListener('click', async (e) => {
   else if (act === 'excel') await exportExcel();
   else if (act === 'exportrules') await exportRules();
   else if (act === 'manage') manageSheet();
+  else if (act === 'gsignin') C.signIn(cfg.googleClientId, 'sync');
+  else if (act === 'syncnow') await syncNow();
+  else if (act === 'pickvault') await cloudAction('Opening Google Drive…', async () => { const id = await C.pickVault(cloud.token.token, cfg.googleApiKey, cfg.googleAppId); if (id) { cloud.meta = { fileId: id, owner: false }; await saveCloudMeta(); } });
+  else if (act === 'lockvault') { cloud.key = null; await kvSet('cloudKey', null); refreshStatus(); render(); toast('Vault locked on this device'); }
+  else if (act === 'forgetvault' || act === 'disconnect') {
+    if (act === 'disconnect' && !confirm('Stop syncing this device? Data stays here and in Google Drive.')) return;
+    cloud.meta = null; cloud.key = null; cloud.dirty = false; await kvSet('cloud', null); await kvSet('cloudKey', null); refreshStatus(); render();
+  }
   else if (act === 'theme') { applyTheme(isDark() ? 'light' : 'dark'); render(); }
   else if (act === 'newline') newLineSheet(null);
   else if (act === 'undo') { $('#toast').hidden = true; await undo(); }
@@ -666,7 +840,7 @@ document.addEventListener('click', async (e) => {
   else if (act === 'wipe') {
     if (!confirm('Erase all bookings, statements, rules and answers on this phone?')) return;
     await clear('tx'); await clear('statements'); await clear('kv');
-    state.tx = []; state.statements = []; state.settings = fresh(); state.lastBackup = null; state.undo = []; recompute(); render();
+    state.tx = []; state.statements = []; state.settings = fresh(); state.lastBackup = null; state.undo = []; cloud.meta = null; cloud.key = null; cloud.token = null; refreshStatus(); recompute(); render();
   }
 });
 document.addEventListener('change', async (e) => {
@@ -698,31 +872,45 @@ document.addEventListener('submit', async (e) => {
     if (group === '__newgroup') group = (fd.get('newgroup') || '').trim() || 'Other';
     const ctx = pendingNew; pendingNew = null;
     const label = fd.get('label').trim();
-    let newId;
-    await change(`Line "${label}" created`, () => { /* line added below, inside the same undo step */ });
-    newId = await createLine({ label, sec, group }); await saveSettings(); recompute();
+    const tx = ctx ? txById(ctx.txId) : null;
     closeSheet();
-    if (ctx) {
-      const tx = txById(ctx.txId);
-      if (ctx.all) state.settings.vendorRules[tx.vkey] = newId; else state.settings.txRules[tx.id] = newId;
-      await saveSettings(); recompute(); render(); toast(`Created "${label}" and moved ${tx.vendor}`, true);
-    } else { render(); toast(`Line "${label}" created`, true); }
+    await change(tx ? `Created "${label}" and moved ${tx.vendor}` : `Line "${label}" created`, (s) => {
+      const id = createLine(s, { label, sec, group });
+      if (tx) { if (ctx.all) s.vendorRules[tx.vkey] = id; else s.txRules[tx.id] = id; }
+    });
   } else if (f.dataset.act === 'onetime') {
     const txId = f.dataset.tx; const label = (fd.get('label') || '').trim(); const existing = fd.get('existing');
     if (!label && !existing) { alert('Name the item or pick an existing one-time line.'); return; }
     closeSheet();
-    await change(`Moved to one-time: ${label || lineLabel(existing)}`, () => {});
-    const id = existing || await createLine({ label, sec: 'onetime', group: '' });
-    state.settings.txRules[txId] = id; delete (state.settings.flagDismissed || {})[txId];
-    await saveSettings(); recompute(); render();
+    await change(`Moved to one-time: ${label || lineLabel(existing)}`, (s) => {
+      s.txRules[txId] = existing || createLine(s, { label, sec: 'onetime', group: '' });
+      if (s.flagDismissed) s.flagDismissed[txId] = null;
+    });
+  } else if (f.dataset.act === 'createvault') {
+    if (fd.get('p1') !== fd.get('p2')) { alert('The two passphrases are different.'); return; }
+    await cloudAction('Creating your encrypted vault…', () => createVaultFlow(fd.get('p1'), !!fd.get('remember')));
+  } else if (f.dataset.act === 'unlock') {
+    await cloudAction('Unlocking…', () => unlockFlow(fd.get('p'), !!fd.get('remember')));
   }
 });
+async function cloudAction(msg, fn) {
+  showBusy(msg);
+  try { await fn(); refreshStatus(); toast('Cloud sync is on'); }
+  catch (e) { if (e.code === 401) { cloud.token = null; await kvSet('gtoken', null); } refreshStatus(); toast(e.message); }
+  finally { hideBusy(); render(); }
+}
 $('#sheet').addEventListener('click', (e) => { if (e.target.id === 'sheet') closeSheet(); });
 
 // ---------------- boot ----------------
 (async () => {
   if (navigator.storage && navigator.storage.persist) { try { await navigator.storage.persist(); } catch { /* not granted */ } }
-  await load(); render();
+  await load(); await loadCloud();
+  const red = C.readRedirect();
+  if (red && red.token) { cloud.token = { token: red.token, exp: red.exp }; await kvSet('gtoken', cloud.token); refreshStatus(); if (!cloud.meta || !cloud.meta.fileId) { state.tab = 'data'; try { await chooseVault(); } catch (e) { toast(e.message); } } }
+  else if (red && red.error) { state.tab = 'data'; toast(red.error); }
+  refreshStatus(); render();
+  if (cloud.status === 'synced') syncNow(true);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && cloud.status === 'synced') syncNow(true); });
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js');
-  window.__app = { state, importFiles, exportExcel, buildWorkbook, reconcile, refresh: () => { recompute(); render(); } }; // used by automated checks
+  window.__app = { state, cloud, importFiles, exportExcel, buildWorkbook, reconcile, refresh: () => { recompute(); render(); } }; // used by automated checks
 })();

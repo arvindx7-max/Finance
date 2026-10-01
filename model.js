@@ -142,7 +142,8 @@ function compileRule(r) {
 export function applyProfile(profile) {
   const p = profile || emptyProfile();
   const out = BASE_LINES.map((l) => ({ ...l }));
-  for (const pl of p.lines || []) {
+  for (const pl0 of p.lines || []) {
+    const pl = { ...pl0, id: migrateId(pl0.id) };
     const ex = out.find((l) => l.id === pl.id);
     const { after, before, ...rest } = pl;
     if (ex) { Object.assign(ex, rest); continue; }
@@ -160,6 +161,10 @@ export function applyProfile(profile) {
   SHEETS = p.sheetNames || {};
 }
 applyProfile(null);
+
+// Line ids renamed in earlier versions; old rules files and answers are mapped forward.
+const RENAMED = { 'in.transfersIn': 'sv.in', 'tr.family': 'sv.out', 'tr.remit': 'ind.remit' };
+export const migrateId = (id) => RENAMED[id] || id;
 
 export function lineLabel(id) {
   if (id && id.startsWith('trip:')) {
@@ -179,7 +184,7 @@ export function lineMeta(id) {
 // Order: single-booking answer > rules-file "first" rules (one-time items, offsets) > your vendor answers
 //        > rules-file rules > generic rules.
 export function classify(tx, settings) {
-  const pick = (id) => (lineMeta(id) ? applyTrip(id, tx, settings) : null);
+  const pick = (raw) => { const id = migrateId(raw); return lineMeta(id) ? applyTrip(id, tx, settings) : null; };
   if (settings.txRules[tx.id]) return pick(settings.txRules[tx.id]);
   const t = { ...tx, T: tx.text.toUpperCase() };
   for (const [id, f] of PROFILE_RULES.first) if (f(t)) return pick(id);
@@ -264,7 +269,15 @@ export function aggregate(txs, settings) {
     const median = a[Math.floor(a.length / 2)];
     for (const t of ts) if (-t.amount >= 250 && -t.amount >= 3 * median && !(settings.flagDismissed || {})[t.id] && !settings.txRules[t.id]) flags.push({ ...t, median });
   }
-  return { rows, months, cell, order, summary, review, flags };
+  // Was a top-up actually forwarded to India? Ask when both happen in the same month.
+  const passFlags = [];
+  for (const m of months) {
+    const india = -rows.filter((t) => t.line && lineMeta(t.line).sec === 'india' && monthOf(t.date) === m).reduce((a, t) => a + t.amount, 0);
+    if (india <= 0) continue;
+    for (const t of rows) if (monthOf(t.date) === m && t.line && lineMeta(t.line).sec === 'fromsav' && t.amount <= india + 0.005
+      && !(settings.flagDismissed || {})[t.id] && !settings.txRules[t.id]) passFlags.push({ ...t, india: r2(india) });
+  }
+  return { rows, months, cell, order, summary, review, flags, passFlags };
 }
 
 // Running-balance reconciliation: every statement must tie on its own and chain to the previous one.
