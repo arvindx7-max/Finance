@@ -212,6 +212,8 @@ export function buildWorkbook(agg, recon, settings) {
   const rowVar = put('Variable expenses', S_('variable'), (c) => xref('Variable Expenses', varTotalRow, 0)(c), [S.text, S.num]);
   const rowOt = put('One-time items', S_('onetime'), (c) => xref('One-Time', otTotalRow, 0)(c), [S.text, S.num]);
   const rowSpent = put('Total spent (fixed + variable + one-time)', S_('spent'), (c) => `${colL(c)}${rowFixed}+${colL(c)}${rowVar}+${colL(c)}${rowOt}`);
+  put('Sent to India (actual amount)', S_('indiaGross'), (c) => `${colL(c)}${indiaB.row}`, [S.text, S.num]);
+  if (ptB) put('Less: received and forwarded (not your money)', S_('passThrough'), (c) => `${colL(c)}${ptB.row}`, [S.text, S.num]);
   const rowIndia = put('Sent to India from your own money', S_('india'), (c) => `${colL(c)}${indiaB.row}${ptB ? `-${colL(c)}${ptB.row}` : ''}`);
   const rowSav = put('SAVED', S_('saved'), (c) => `${colL(c)}${rowEarned}-${colL(c)}${rowSpent}-${colL(c)}${rowIndia}`, [S.totLbl, S.totNum]);
   is.set(0, r, 'Savings rate', S.totLbl);

@@ -26,7 +26,7 @@ const kvSet = (k, v) => putMany('kv', [{ k, v }]);
 
 // ---------------- state ----------------
 const fresh = () => structuredClone(DEFAULT_SETTINGS);
-const state = { tx: [], statements: [], settings: fresh(), lastBackup: null, tab: 'overview', month: null, section: 'fixed', q: '', agg: null, undo: [] };
+const state = { tx: [], statements: [], settings: fresh(), lastBackup: null, tab: 'overview', period: { mode: 'month', key: null }, section: 'fixed', q: '', agg: null, undo: [] };
 async function load() {
   state.tx = await all('tx');
   state.statements = await all('statements');
@@ -37,8 +37,6 @@ async function load() {
 }
 function recompute() {
   state.agg = aggregate(state.tx, state.settings);
-  const ms = state.agg.months;
-  if (!state.month || !ms.includes(state.month)) state.month = ms[ms.length - 1] || null;
 }
 const saveSettings = () => kvSet('settings', state.settings);
 const ensureProfile = () => (state.settings.profile ||= emptyProfile());
@@ -232,10 +230,11 @@ function render() {
   const main = $('#main');
   if (!state.tx.length && state.tab !== 'data') { main.innerHTML = emptyView(); return; }
   main.innerHTML = { overview: overviewView, months: monthsView, review: reviewView, data: dataView }[state.tab]();
+  if (state.tab === 'overview') animateCount();
 }
 
 function emptyView() {
-  return `<section class="empty">
+  return `${topbar('Finances')}<section class="empty">
     <h1>Start with your statements</h1>
     <p>Add your Deutsche Bank Kontoauszug PDFs (or the CSV export). Everything is read and stored on this phone only.</p>
     <label class="btn primary">Add statements<input type="file" accept=".pdf,.csv,.json,application/pdf,text/csv,application/json" multiple data-act="import" hidden></label>
@@ -245,94 +244,171 @@ function emptyView() {
 function backupBanner() {
   const d = daysSince(state.lastBackup);
   if (d !== null && d < 7) return '';
-  return `<button class="banner" data-act="backup">${d === null ? 'No backup yet.' : `Last backup: ${d} days ago.`} <u>Export backup</u></button>`;
-}
-function monthPicker() {
-  return `<div class="months" role="tablist">${state.agg.months.map((m) => `<button role="tab" aria-selected="${m === state.month}" data-month="${m}">${monthLabel(m, true)}<small>${m.slice(2, 4)}</small></button>`).join('')}</div>`;
+  return `<button class="banner" data-act="backup">${d === null ? 'No backup yet.' : `Last backup ${d} days ago.`} <u>Export backup</u></button>`;
 }
 
-function overviewView() {
-  const s = state.agg.summary.find((x) => x.month === state.month);
-  const rec = reconcile(state.tx, pdfStatements());
-  const st = rec.find((r) => monthOf(r.to) === state.month);
-  const tie = st ? (Math.abs(st.diff) < 0.005 && st.chainOk) : null;
-  const top = topVendors(state.month, 5);
-  const pending = state.agg.review.filter((t) => monthOf(t.date) === state.month).length;
-  return `${backupBanner()}${monthPicker()}
-  <section class="ledger">
-    <p class="ledger-month">${monthLabel(state.month)}</p>
-    <ol class="sum">
-      <li><span>Earned income</span><b>${eur(s.earned)}</b></li>
-      <li><span>− Fixed / recurring</span><b>${eur(s.fixed)}</b></li>
-      <li><span>− Variable</span><b>${eur(s.variable)}</b></li>
-      <li><span>− One-time</span><b>${eur(s.onetime)}</b></li>
-      <li><span>− Sent to India</span><b>${eur(s.india)}</b></li>
-    </ol>
-    <div class="savings ${s.saved < 0 ? 'neg' : 'pos'}"><span>Saved</span><strong>${eur(s.saved)}</strong></div>
-    <ol class="sum went">
-      <li><span>Moved to savings, net</span><b>${eur(s.netToSav)}</b></li>
-      <li><span>Kept in this account</span><b>${eur(s.kept)}</b></li>
-    </ol>
-    ${s.passThrough ? `<p class="fine">${eur(s.passThrough)} received and forwarded to India is left out.</p>` : ''}
-    ${st ? `<p class="seal ${tie ? 'ok' : 'bad'}">${tie ? `Ties to statement: ${eur(st.open)} → ${eur(st.close)}` : `Does not tie: off by ${eur(st.diff)}`}</p>` : '<p class="seal">No statement for this month yet</p>'}
-    ${pending ? `<button class="seal bad link" data-tab="review">${pending} booking${pending > 1 ? 's' : ''} (${eur(s.unassigned)}) still need review</button>` : ''}
-  </section>
-  <section class="card"><h2>Earned, spent and saved</h2>${chartFlows()}</section>
-  <section class="card"><h2>Savings rate</h2>${chartRate()}</section>
-  <section class="card"><h2>Variable spend by category</h2>${chartStack()}</section>
-  <section class="card"><h2>Top variable vendors, ${monthLabel(state.month, true)}</h2>${top.length ? barsH(top) : '<p class="fine">No variable spend this month.</p>'}</section>`;
+// ---------------- periods: month, quarter, year, total ----------------
+const PMODES = [['month', 'Month'], ['quarter', 'Quarter'], ['year', 'Year'], ['all', 'Total']];
+function periodKey(m, mode) {
+  const [y, mo] = m.split('-').map(Number);
+  return mode === 'month' ? m : mode === 'quarter' ? `${y}-Q${Math.ceil(mo / 3)}` : mode === 'year' ? String(y) : 'all';
 }
-function topVendors(month, n) {
+const periodList = (mode) => [...new Set(state.agg.months.map((m) => periodKey(m, mode)))];
+const monthsIn = (key, mode) => state.agg.months.filter((m) => periodKey(m, mode) === key);
+function periodLabel(key, mode, short = false) {
+  if (mode === 'month') return monthLabel(key, short);
+  if (mode === 'quarter') { const [y, q] = key.split('-'); return short ? q : `${q} ${y}`; }
+  if (mode === 'year') return key;
+  const ms = state.agg.months; return ms.length ? `${monthLabel(ms[0], true)} ${ms[0].slice(0, 4)} – ${monthLabel(ms[ms.length - 1], true)} ${ms[ms.length - 1].slice(0, 4)}` : 'All';
+}
+const SUM_KEYS = ['earned', 'fixed', 'variable', 'onetime', 'spent', 'indiaGross', 'passThrough', 'india', 'saved', 'toSav', 'fromSav', 'netToSav', 'kept', 'unassigned'];
+function sumMonths(months) {
+  const out = Object.fromEntries(SUM_KEYS.map((k) => [k, 0]));
+  for (const s of state.agg.summary) if (months.includes(s.month)) for (const k of SUM_KEYS) out[k] = Math.round((out[k] + s[k]) * 100) / 100;
+  out.savingsRate = out.earned ? out.saved / out.earned : 0;
+  return out;
+}
+function ensurePeriod() {
+  const p = state.period; const list = periodList(p.mode);
+  if (!list.includes(p.key)) p.key = list[list.length - 1] || null;
+}
+function periodPicker() {
+  const p = state.period;
+  return `<div class="modes" role="tablist" aria-label="Period type">${PMODES.map(([k, l]) => `<button role="tab" aria-selected="${p.mode === k}" data-pmode="${k}">${l}</button>`).join('')}</div>
+  ${p.mode === 'all' ? '' : `<div class="periods" role="tablist" aria-label="Period">${periodList(p.mode).map((k) => `<button role="tab" aria-selected="${k === p.key}" data-pkey="${k}">${h(periodLabel(k, p.mode, p.mode === 'month'))}${p.mode === 'month' ? ` ${k.slice(2, 4)}` : ''}</button>`).join('')}</div>`}`;
+}
+
+// ---------------- theme ----------------
+const THEMES = [['auto', 'Auto'], ['light', 'Light'], ['dark', 'Dark']];
+function currentTheme() { try { return localStorage.getItem('theme') || 'auto'; } catch { return 'auto'; } }
+function applyTheme(t) {
+  try { localStorage.setItem('theme', t); } catch { /* storage blocked */ }
+  if (t === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
+  const dark = t === 'dark' || (t === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.querySelector('meta[name=theme-color]').content = dark ? '#0B1222' : '#EEF2F8';
+}
+function isDark() { return document.documentElement.dataset.theme === 'dark' || (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches); }
+function topbar(title) {
+  return `<header class="topbar"><h1>${h(title)}</h1><button class="icon-btn" data-act="theme" aria-label="Switch to ${isDark() ? 'light' : 'dark'} theme">${isDark()
+    ? '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>'
+    : '<svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></svg>'}</button></header>`;
+}
+
+// ---------------- overview ----------------
+function overviewView() {
+  ensurePeriod();
+  const p = state.period; const ms = monthsIn(p.key, p.mode); const s = sumMonths(ms);
+  const rec = reconcile(state.tx, pdfStatements()).filter((r) => ms.includes(monthOf(r.to)));
+  const tie = rec.length ? rec.every((r) => Math.abs(r.diff) < 0.005 && r.chainOk) : null;
+  const pending = state.agg.review.filter((t) => ms.includes(monthOf(t.date))).length;
+  // money-flow strip: earned income split into where it went
+  const parts = [['fixed', s.fixed], ['variable', s.variable], ['onetime', s.onetime], ['india', Math.max(0, s.india)], ['saved', Math.max(0, s.saved)]];
+  const whole = Math.max(s.earned, s.spent + Math.max(0, s.india), 1);
+  const over = s.saved < 0 ? -s.saved : 0;
+  const river = parts.filter(([, v]) => v > 0).map(([k, v]) => `<i class="c-${k}" style="width:${(v / whole * 100).toFixed(2)}%" title="${k}"></i>`).join('')
+    + (over ? `<i class="over" style="width:${Math.min(30, over / whole * 100).toFixed(2)}%" title="spent more than earned"></i>` : '');
+  const rate = s.earned ? Math.round(s.saved / s.earned * 100) : 0;
+  return `${topbar('Overview')}${backupBanner()}${periodPicker()}
+  <div class="overview">
+  <section class="hero">
+    <div class="hero-head"><p>${h(periodLabel(p.key, p.mode))}</p><span class="badge${s.saved < 0 ? ' neg' : ''}">${s.saved < 0 ? 'Spent more than earned' : `${rate}% of earnings saved`}</span></div>
+    <div class="saved-fig${s.saved < 0 ? ' neg' : ''}" data-count="${s.saved}">${eur(s.saved)}</div>
+    <p class="saved-cap">saved${p.mode === 'all' ? ' in total' : ''}</p>
+    <div class="river" role="img" aria-label="How earned income was used">${river}</div>
+    <ul class="flow">
+      <li class="lead"><i class="dot c-earned"></i><span>Earned income</span><b>${eur(s.earned)}</b></li>
+      <li><i class="dot c-fixed"></i><span>Fixed / recurring</span><b>−${eur(s.fixed)}</b></li>
+      <li><i class="dot c-variable"></i><span>Variable</span><b>−${eur(s.variable)}</b></li>
+      <li><i class="dot c-onetime"></i><span>One-time</span><b>−${eur(s.onetime)}</b></li>
+      <li><i class="dot c-india"></i><span>Sent to India</span><b>−${eur(s.indiaGross)}</b></li>
+      ${s.passThrough ? `<li class="sub"><i></i><span>${h(lineLabel('pt.in'))}</span><b>+${eur(s.passThrough)}</b></li>` : ''}
+      <li class="total"><i class="dot c-saved"></i><span>Saved</span><b>${eur(s.saved)}</b></li>
+    </ul>
+    <div class="went"><h3>Where the saved money is</h3>
+      <div><span>Moved to savings, net</span><b>${eur(s.netToSav)}</b></div>
+      <div><span>Kept in this account</span><b>${eur(s.kept)}</b></div>
+    </div>
+    ${tie === null ? '<p class="seal">No statement for this period yet</p>' : `<p class="seal ${tie ? 'ok' : 'bad'}">${tie ? `Ties to ${rec.length > 1 ? `${rec.length} statements` : 'the statement'}: ${eur(rec[0].open)} → ${eur(rec[rec.length - 1].close)}` : 'A statement in this period does not tie (see Data)'}</p>`}
+    ${pending ? `<button class="seal bad" data-tab="review">${pending} booking${pending > 1 ? 's' : ''} (${eur(s.unassigned)}) still need review</button>` : ''}
+  </section>
+  <div class="chart-grid">
+    <section class="card wide"><h2>Earned, spent and saved</h2>${chartFlows()}</section>
+    <section class="card"><h2>Savings rate</h2>${chartRate()}</section>
+    <section class="card"><h2>Top variable vendors</h2>${(() => { const top = topVendors(ms, 6); return top.length ? barsH(top) : '<p class="fine">No variable spend in this period.</p>'; })()}</section>
+    <section class="card wide"><h2>Variable spend by category</h2>${chartStack()}</section>
+  </div>
+  </div>`;
+}
+function topVendors(months, n) {
   const m = {};
-  for (const t of state.agg.rows) if (monthOf(t.date) === month && t.line && lineMeta(t.line).sec === 'variable') m[t.vendor] = (m[t.vendor] || 0) - t.amount;
+  for (const t of state.agg.rows) if (months.includes(monthOf(t.date)) && t.line && lineMeta(t.line).sec === 'variable') m[t.vendor] = (m[t.vendor] || 0) - t.amount;
   return Object.entries(m).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).slice(0, n);
 }
+// Count the saved figure up from its previous value: the one orchestrated motion.
+let lastSaved = 0;
+function animateCount() {
+  const el = document.querySelector('[data-count]'); if (!el) return;
+  const to = +el.dataset.count; const from = lastSaved; lastSaved = to;
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches || from === to) return;
+  const t0 = performance.now(); const dur = 650;
+  const step = (now) => { const k = Math.min(1, (now - t0) / dur); const e = 1 - Math.pow(1 - k, 3); el.textContent = eur(from + (to - from) * e); if (k < 1) requestAnimationFrame(step); else el.textContent = eur(to); };
+  requestAnimationFrame(step);
+}
 
-// ---------------- charts (inline SVG) ----------------
-const W = 340, PAD = 34;
-function scale(min, max, h, top = 10) { const span = max - min || 1; return (v) => top + (max - v) / span * h; }
+// ---------------- charts (inline SVG), one bar per period of the chosen type ----------------
+let W = 340; const PAD = 34;
+const WIDE = matchMedia('(min-width: 960px)');
+WIDE.addEventListener('change', () => render());
+const wideW = () => (WIDE.matches ? 720 : 340);
+function scale(min, max, hgt, top = 10) { const span = max - min || 1; return (v) => top + (max - v) / span * hgt; }
 function axis(y, min, max, unit = '') {
   const ticks = [min, 0, max].filter((v, i, a) => a.indexOf(v) === i && v >= min && v <= max);
   return ticks.map((v) => `<line x1="${PAD}" x2="${W}" y1="${y(v)}" y2="${y(v)}" class="${v === 0 ? 'zero' : 'grid'}"/><text x="${PAD - 4}" y="${y(v) + 3}" class="tick" text-anchor="end">${v === 0 ? '0' : (Math.abs(v) >= 1000 ? `${Math.round(v / 1000)}k` : Math.round(v))}${v ? unit : ''}</text>`).join('');
 }
+function series() {
+  const mode = state.period.mode === 'all' ? 'month' : state.period.mode;
+  return periodList(mode).map((k) => ({ key: k, label: periodLabel(k, mode, true), sel: state.period.mode === 'all' || k === state.period.key, ...sumMonths(monthsIn(k, mode)) }));
+}
 function chartFlows() {
-  const S = state.agg.summary; const H = 150;
+  W = wideW(); const S = series(); const H = WIDE.matches ? 200 : 150;
   const out = S.map((s) => s.spent + s.india);
   const max = Math.max(...S.map((s) => s.earned), ...out, 1), min = Math.min(0, ...S.map((s) => s.saved));
   const y = scale(min, max, H); const bw = (W - PAD) / S.length;
-  const bars = S.map((s, i) => {
-    const x = PAD + i * bw; const sel = s.month === state.month ? ' sel' : '';
-    return `<rect x="${x + bw * 0.12}" width="${bw * 0.3}" y="${y(s.earned)}" height="${y(0) - y(s.earned)}" class="b-in${sel}"/>
-      <rect x="${x + bw * 0.44}" width="${bw * 0.3}" y="${y(out[i])}" height="${y(0) - y(out[i])}" class="b-out${sel}"/>
-      <text x="${x + bw * 0.43}" y="${H + 26}" class="tick" text-anchor="middle">${monthLabel(s.month, true)}</text>`;
-  }).join('');
   const px = (i) => PAD + i * bw + bw * 0.43;
-  return `<svg viewBox="0 0 ${W} ${H + 32}" class="chart" role="img" aria-label="Earned, spent and saved per month">${axis(y, Math.round(min), Math.round(max))}${bars}<polyline points="${S.map((s, i) => `${px(i)},${y(s.saved)}`).join(' ')}" class="l-sav"/>${S.map((s, i) => `<circle cx="${px(i)}" cy="${y(s.saved)}" r="3" class="d-sav"/>`).join('')}</svg>
-  <p class="legend"><i class="k-in"></i>Earned <i class="k-out"></i>Spent + sent to India <i class="k-sav"></i>Saved</p>`;
+  const bars = S.map((s, i) => {
+    const x = PAD + i * bw; const sel = s.sel ? ' sel' : '';
+    return `<rect x="${x + bw * 0.12}" width="${bw * 0.3}" y="${y(s.earned)}" height="${y(0) - y(s.earned)}" rx="3" class="b-in${sel}"/>
+      <rect x="${x + bw * 0.44}" width="${bw * 0.3}" y="${y(out[i])}" height="${y(0) - y(out[i])}" rx="3" class="b-out${sel}"/>
+      <text x="${px(i)}" y="${H + 26}" class="tick" text-anchor="middle">${h(s.label)}</text>`;
+  }).join('');
+  return `<svg viewBox="0 0 ${W} ${H + 32}" class="chart" role="img" aria-label="Earned, spent and saved per period">${axis(y, Math.round(min), Math.round(max))}${bars}<polyline points="${S.map((s, i) => `${px(i)},${y(s.saved)}`).join(' ')}" class="l-sav"/>${S.map((s, i) => `<circle cx="${px(i)}" cy="${y(s.saved)}" r="3.5" class="d-sav"/>`).join('')}</svg>
+  <p class="legend"><span><i class="k-in"></i>Earned</span><span><i class="k-out"></i>Spent and sent to India</span><span><i class="k-sav"></i>Saved</span></p>`;
 }
 function chartRate() {
-  const S = state.agg.summary; const H = 110;
+  W = 340; const S = series(); const H = 110;
   const v = S.map((s) => s.savingsRate * 100);
   const max = Math.max(10, ...v), min = Math.min(0, ...v);
   const y = scale(min, max, H); const bw = (W - PAD) / S.length;
   const px = (i) => PAD + i * bw + bw / 2;
-  return `<svg viewBox="0 0 ${W} ${H + 32}" class="chart" role="img" aria-label="Savings rate per month">${axis(y, Math.round(min), Math.round(max), '%')}<polyline points="${v.map((r, i) => `${px(i)},${y(r)}`).join(' ')}" class="l-rate"/>${v.map((r, i) => `<circle cx="${px(i)}" cy="${y(r)}" r="3.5" class="d-rate"/><text x="${px(i)}" y="${y(r) - 7}" class="val" text-anchor="middle">${Math.round(r)}%</text><text x="${px(i)}" y="${H + 26}" class="tick" text-anchor="middle">${monthLabel(S[i].month, true)}</text>`).join('')}</svg>
+  const area = `${px(0)},${y(0)} ${v.map((r, i) => `${px(i)},${y(r)}`).join(' ')} ${px(v.length - 1)},${y(0)}`;
+  return `<svg viewBox="0 0 ${W} ${H + 32}" class="chart" role="img" aria-label="Savings rate per period">${axis(y, Math.round(min), Math.round(max), '%')}<polygon points="${area}" class="a-rate"/><polyline points="${v.map((r, i) => `${px(i)},${y(r)}`).join(' ')}" class="l-rate"/>${v.map((r, i) => `<circle cx="${px(i)}" cy="${y(r)}" r="3.5" class="d-rate"/><text x="${px(i)}" y="${y(r) - 8}" class="val" text-anchor="middle">${Math.round(r)}%</text><text x="${px(i)}" y="${H + 26}" class="tick" text-anchor="middle">${h(S[i].label)}</text>`).join('')}</svg>
   <p class="fine">Saved as a share of earned income.</p>`;
 }
-const GROUP_COLORS = ['#1F3864', '#4472C4', '#8FAADC', '#2E7D32', '#C9A227', '#B4532A', '#7A5195', '#8496B0', '#5E6A80', '#2B8C8C'];
+const GROUP_COLORS = ['var(--indigo)', 'var(--sky)', 'var(--lagoon)', 'var(--saffron)', 'var(--rose)', '#8E7CF0', '#2BA6B8', 'var(--slate)', '#C77D4A', '#5FB36B'];
 function chartStack() {
-  const S = state.agg.summary; const H = 150;
+  W = wideW(); const S = series(); const H = WIDE.matches ? 200 : 150;
   const used = state.agg.order.filter((l) => l.sec === 'variable');
   const groups = [...new Set(used.map((l) => l.group || 'Other'))];
-  const val = (g, m) => -state.agg.rows.filter((t) => t.line && monthOf(t.date) === m && lineMeta(t.line).sec === 'variable' && (lineMeta(t.line).group || 'Other') === g).reduce((a, t) => a + t.amount, 0);
+  const mode = state.period.mode === 'all' ? 'month' : state.period.mode;
+  const val = (g, key) => { const ms = monthsIn(key, mode); return -state.agg.rows.filter((t) => t.line && ms.includes(monthOf(t.date)) && lineMeta(t.line).sec === 'variable' && (lineMeta(t.line).group || 'Other') === g).reduce((a, t) => a + t.amount, 0); };
   const max = Math.max(...S.map((s) => s.variable), 1);
   const y = scale(0, max, H); const bw = (W - PAD) / S.length;
   const bars = S.map((s, i) => {
     let acc = 0; const x = PAD + i * bw + bw * 0.18;
-    return groups.map((g, gi) => { const v = Math.max(0, val(g, s.month)); const r = `<rect x="${x}" width="${bw * 0.64}" y="${y(acc + v)}" height="${y(acc) - y(acc + v)}" fill="${GROUP_COLORS[gi % GROUP_COLORS.length]}"/>`; acc += v; return r; }).join('') + `<text x="${x + bw * 0.32}" y="${H + 26}" class="tick" text-anchor="middle">${monthLabel(s.month, true)}</text>`;
+    return `<g opacity="${s.sel ? 1 : 0.45}">${groups.map((g, gi) => { const v = Math.max(0, val(g, s.key)); const r = `<rect x="${x}" width="${bw * 0.64}" y="${y(acc + v)}" height="${Math.max(0, y(acc) - y(acc + v) - 1)}" fill="${GROUP_COLORS[gi % GROUP_COLORS.length]}"/>`; acc += v; return r; }).join('')}</g><text x="${x + bw * 0.32}" y="${H + 26}" class="tick" text-anchor="middle">${h(s.label)}</text>`;
   }).join('');
-  return `<svg viewBox="0 0 ${W} ${H + 32}" class="chart" role="img" aria-label="Variable spend by category per month">${axis(y, 0, Math.round(max))}${bars}</svg>
-  <p class="legend wrap">${groups.map((g, gi) => `<span><i style="background:${GROUP_COLORS[gi % GROUP_COLORS.length]}"></i>${h(g)}</span>`).join('')}</p>`;
+  return `<svg viewBox="0 0 ${W} ${H + 32}" class="chart" role="img" aria-label="Variable spend by category per period">${axis(y, 0, Math.round(max))}${bars}</svg>
+  <p class="legend">${groups.map((g, gi) => `<span><i style="background:${GROUP_COLORS[gi % GROUP_COLORS.length]}"></i>${h(g)}</span>`).join('')}</p>`;
 }
 function barsH(items) {
   const max = items[0][1];
@@ -347,7 +423,7 @@ function shortDates(dates) {
 const SEG = [['fixed', 'Fixed'], ['variable', 'Variable'], ['onetime', 'One-time'], ['income', 'Income'], ['search', 'Search']];
 function monthsView() {
   const seg = `<div class="seg" role="tablist">${SEG.map(([k, l]) => `<button role="tab" aria-selected="${state.section === k}" data-section="${k}">${l}</button>`).join('')}</div>`;
-  if (state.section === 'search') return seg + searchView();
+  if (state.section === 'search') return topbar('Months') + seg + searchView();
   const a = state.agg; const ms = a.months;
   const secs = state.section === 'income' ? ['income', 'india', 'passthrough', 'tosav', 'fromsav'] : [state.section];
   const ls = a.order.filter((l) => secs.includes(l.sec));
@@ -365,7 +441,7 @@ function monthsView() {
   const foot = state.section === 'income'
     ? [['Earned income', 'earned'], ['Total spent', 'spent'], ['Sent to India (own money)', 'india'], ['Saved', 'saved'], ['Moved to savings, net', 'netToSav'], ['Kept in account', 'kept']].map(([l, k]) => footRow(l, k)).join('')
     : footRow('Total', state.section);
-  return `${seg}<div class="tablewrap"><table class="grid"><thead><tr><th>Line</th>${ms.map((m) => `<th>${monthLabel(m, true)}</th>`).join('')}<th>Total</th></tr></thead><tbody>${rows || `<tr><td colspan="${ms.length + 2}" class="fine">Nothing in this section yet.</td></tr>`}</tbody><tfoot>${foot}</tfoot></table></div>
+  return `${topbar('Months')}${seg}<div class="tablewrap"><table class="grid"><thead><tr><th>Line</th>${ms.map((m) => `<th>${monthLabel(m, true)}</th>`).join('')}<th>Total</th></tr></thead><tbody>${rows || `<tr><td colspan="${ms.length + 2}" class="fine">Nothing in this section yet.</td></tr>`}</tbody><tfoot>${foot}</tfoot></table></div>
   <p class="fine pad">Tap an amount to see its bookings and move any of them to another line.</p>`;
 }
 function searchView() {
@@ -439,10 +515,10 @@ async function createLine({ label, sec, group }) {
 // ---------------- review ----------------
 function reviewView() {
   const r = state.agg.review; const f = state.agg.flags;
-  if (!r.length && !f.length) return `<section class="empty small"><h1>Nothing to review</h1><p>Every booking matched a rule or one of your answers, and nothing looks like a one-time spend.</p></section>`;
+  if (!r.length && !f.length) return `${topbar('Review')}<section class="empty small"><h1>Nothing to review</h1><p>Every booking matched a rule or one of your answers, and nothing looks like a one-time spend.</p></section>`;
   const byV = {};
   for (const t of r) (byV[t.vkey] ||= []).push(t);
-  return `${r.length ? `<section class="pad"><h1 class="h1">Unknown vendors</h1><p class="fine">Pick a line once; with "Apply to every booking" ticked, the app uses it for this vendor from now on.</p></section>
+  return `${topbar('Review')}${r.length ? `<section class="pad"><h1 class="h1">Unknown vendors</h1><p class="fine">Pick a line once; with "Apply to every booking" ticked, the app uses it for this vendor from now on.</p></section>
   ${Object.values(byV).map((ts) => `<section class="card">${txList(ts.slice(0, 1), true)}${ts.length > 1 ? `<p class="fine">${ts.length} bookings from this vendor: ${ts.map((t) => eur(t.amount)).join(', ')}</p>` : ''}</section>`).join('')}` : ''}
   ${f.length ? `<section class="pad"><h1 class="h1">Possible one-time items</h1><p class="fine">These are at least three times the usual amount for their line.</p></section>
   ${f.map((t) => `<section class="card flag"><div><b>${h(t.vendor)}</b><span>${deDate(t.date)} · ${h(lineLabel(t.line))} · usually around ${eur(t.median)}</span></div><strong>${eur(t.amount)}</strong>
@@ -463,7 +539,8 @@ function dataView() {
   const s = state.settings; const d = daysSince(state.lastBackup);
   const nAns = Object.keys(s.vendorRules).length + Object.keys(s.txRules).length;
   const own = (s.profile?.lines || []).filter((l) => l.id.startsWith('c.')).length;
-  return `<section class="card">
+  const theme = currentTheme();
+  return `${topbar('Data')}<div class="data-grid"><section class="card">
     <h2>Add statements</h2>
     <p class="fine">PDF Kontoauszug or CSV export. Overlapping files are fine: bookings already stored are skipped.</p>
     <label class="btn primary">Choose files<input type="file" accept=".pdf,.csv,.json,application/pdf,text/csv,application/json" multiple data-act="import" hidden></label>
@@ -484,6 +561,11 @@ function dataView() {
     <button class="btn primary" data-act="excel">Export Excel</button>
   </section>
   <section class="card">
+    <h2>Appearance</h2>
+    <div class="themes" role="group" aria-label="Theme">${THEMES.map(([k, l]) => `<button data-themeset="${k}" aria-pressed="${theme === k}">${l}</button>`).join('')}</div>
+    <p class="fine">Auto follows your phone or laptop setting.</p>
+  </section>
+  <section class="card wide">
     <h2>Reconciliation</h2>
     ${rec.length || cpRows ? `<ul class="recon-list">${rec.map((x) => { const ok = Math.abs(x.diff) < 0.005 && x.chainOk; return `<li class="${ok ? 'ok' : 'bad'}"><div><b>${deDate(x.from)} – ${deDate(x.to)}</b><span>${ok ? 'Ties' : Math.abs(x.diff) >= 0.005 ? `Off by ${eur(x.diff)}` : `Gap: opening ≠ ${deDate(x.gapFrom)} closing`}</span></div><p>${n2(x.open)} − ${n2(-x.debits)} + ${n2(x.credits)} = <b>${n2(x.computed)}</b> · bank: ${n2(x.close)}</p></li>`; }).join('')}${cpRows}</ul>` : '<p class="fine">Import a PDF statement to see the balance check.</p>'}
   </section>
@@ -501,8 +583,8 @@ function dataView() {
     <h2>Erase data on this phone</h2>
     <p class="fine">Removes all bookings, statements, rules and answers. Export a backup first.</p>
     <button class="btn warn" data-act="wipe">Erase everything</button>
-  </section>
-  <p class="fine pad">${state.tx.length} bookings stored · runs offline · nothing leaves this device</p>`;
+  </section></div>
+  <p class="fine pad">${state.tx.length} bookings stored on this device. Works offline; nothing is sent anywhere.</p>`;
 }
 
 function manageSheet() {
@@ -536,11 +618,13 @@ function showImportReport(r) {
 
 // ---------------- events ----------------
 document.addEventListener('click', async (e) => {
-  const b = e.target.closest('button, [data-month], [data-section], [data-cell]');
+  const b = e.target.closest('button, [data-section], [data-cell]');
   if (!b) return;
   const ds = b.dataset;
   if (ds.tab) { closeSheet(); state.tab = ds.tab; render(); window.scrollTo(0, 0); return; }
-  if (ds.month) { state.month = ds.month; render(); return; }
+  if (ds.pmode) { state.period.mode = ds.pmode; state.period.key = null; render(); return; }
+  if (ds.pkey) { state.period.key = ds.pkey; render(); return; }
+  if (ds.themeset) { applyTheme(ds.themeset); render(); return; }
   if (ds.section) { state.section = ds.section; render(); return; }
   if (ds.cell) {
     const c = state.agg.cell[ds.cell]; const i = ds.cell.lastIndexOf('|'); const id = ds.cell.slice(0, i), m = ds.cell.slice(i + 1);
@@ -573,6 +657,7 @@ document.addEventListener('click', async (e) => {
   else if (act === 'excel') await exportExcel();
   else if (act === 'exportrules') await exportRules();
   else if (act === 'manage') manageSheet();
+  else if (act === 'theme') { applyTheme(isDark() ? 'light' : 'dark'); render(); }
   else if (act === 'newline') newLineSheet(null);
   else if (act === 'undo') { $('#toast').hidden = true; await undo(); }
   else if (act === 'resetflags') { await change('One-time checks reset', (s) => { s.flagDismissed = {}; }); manageSheet(); }
