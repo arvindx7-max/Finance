@@ -2,6 +2,7 @@ import { parsePdf, parseCsv } from './parser.js';
 import { aggregate, reconcile, DEFAULT_SETTINGS, emptyProfile, lines, SECTIONS, USER_SECTIONS, lineLabel, lineMeta, monthLabel, deDate, monthOf } from './model.js';
 import { buildWorkbook } from './xlsx.js';
 import * as C from './cloud.js';
+import * as F from './family.js';
 
 // ---------------- storage (IndexedDB) ----------------
 const DB_NAME = 'finance-insights';
@@ -27,13 +28,14 @@ const kvSet = (k, v) => putMany('kv', [{ k, v }]);
 
 // ---------------- state ----------------
 const fresh = () => structuredClone(DEFAULT_SETTINGS);
-const state = { tx: [], statements: [], settings: fresh(), lastBackup: null, tab: 'overview', period: { mode: 'month', key: null }, section: 'fixed', q: '', agg: null, undo: [] };
+const state = { tx: [], statements: [], settings: fresh(), lastBackup: null, tab: 'overview', period: { mode: 'month', key: null }, section: 'fixed', q: '', agg: null, undo: [], family: null, pendingFamily: null };
 async function load() {
   state.tx = await all('tx');
   state.statements = await all('statements');
   state.settings = { ...fresh(), ...(await kvGet('settings', {})) };
   state.lastBackup = await kvGet('lastBackup', null);
   state.undo = await kvGet('undo', []);
+  state.family = await kvGet('family', null);
   recompute();
 }
 function recompute() {
@@ -121,11 +123,11 @@ function refreshStatus() {
   else if (cloud.status !== 'error' && cloud.status !== 'syncing') cloud.status = 'synced';
 }
 const saveCloudMeta = () => kvSet('cloud', { ...cloud.meta, dirty: cloud.dirty });
-const statePayload = () => ({ tx: state.tx, statements: state.statements, settings: state.settings });
+const statePayload = () => ({ tx: state.tx, statements: state.statements, settings: state.settings, family: state.family });
 async function persistAll() {
   await clear('tx'); await putMany('tx', state.tx);
   await clear('statements'); await putMany('statements', state.statements);
-  await saveSettings();
+  await saveSettings(); await saveFamily();
 }
 // Pull the vault, merge it into this device, push the result back if anything here was new.
 async function syncNow(quiet = false) {
@@ -143,9 +145,10 @@ async function syncNow(quiet = false) {
       const ids = new Set(state.statements.map((s) => s.id));
       state.statements = [...state.statements, ...(remote.statements || []).filter((s) => !ids.has(s.id))];
       state.settings = mergeSettings(state.settings, remote.settings || {});
+      if (remote.family && (!state.family || (remote.family.stamp || 0) > (state.family.stamp || 0))) state.family = remote.family;
       await persistAll(); recompute();
       const after = JSON.stringify(statePayload());
-      const remoteJson = JSON.stringify({ tx: remote.tx, statements: remote.statements, settings: remote.settings });
+      const remoteJson = JSON.stringify({ tx: remote.tx, statements: remote.statements, settings: remote.settings, family: remote.family });
       changedHere = changedHere || (after !== remoteJson && after !== before) || state.tx.length !== (remote.tx || []).length;
       cloud.meta.remoteModified = m.modifiedTime;
     }
@@ -214,6 +217,49 @@ function cloudCard() {
     <div class="row"><button class="btn primary" data-act="syncnow">Sync now</button><button class="btn" data-act="lockvault">Lock this device</button><button class="btn warn" data-act="disconnect">Disconnect</button></div>
     ${cloud.meta.owner !== false ? '<p class="fine">To share: in Google Drive, share the file finance-vault.json with your wife (Editor), then give her the passphrase in person.</p>' : ''}`;
   return `<section class="card wide"><h2>Cloud sync</h2>${body}</section>`;
+}
+
+// ---------------- family pictures ----------------
+// Kept apart from settings (so undo snapshots stay small); synced in the vault, newest set wins.
+const CAPTIONS = { cheer: 'Next month is ours.', smile1: 'A good start.', smile2: 'Nicely done.', celebrate: 'What a month!', together: 'We’re in this together.', thinking: 'Let’s figure these out.', question: 'What shall we do next?' };
+async function saveFamily() { await kvSet('family', state.family); }
+function moodFor(avgSaved) { return avgSaved < 0 ? 'cheer' : avgSaved < 500 ? 'smile1' : avgSaved < 1000 ? 'smile2' : 'celebrate'; }
+let lastMood = null;
+function familyFig(mood, wide = false) {
+  const img = state.family && state.family.images && state.family.images[mood];
+  if (!img) return '';
+  const anim = mood !== lastMood ? ` pop${mood === 'celebrate' ? ' bounce' : ''}` : ''; lastMood = mood;
+  return `<figure class="family${wide ? ' wide' : ''}${anim}"><img src="${img}" alt="Family doodle: ${h(CAPTIONS[mood])}"></figure>`;
+}
+function familyStrip(mood) {
+  const fig = familyFig(mood); if (!fig) return '';
+  return `<div class="family-strip">${fig}<p>${h(CAPTIONS[mood])}</p></div>`;
+}
+function familyCard() {
+  const f = state.family || {}; const has = f.images && Object.keys(f.images).length;
+  const keyForm = `<form class="stack" data-act="geminikey"><label>Gemini API key<input name="key" type="password" autocomplete="off" required placeholder="AIza…" value="${h(f.key ? '••••••••' : '')}"></label>
+    <p class="fine">Create one at aistudio.google.com → Get API key, in your Finances project. Making pictures needs billing switched on for that project; a set costs a few cents.</p><button class="btn">Save key</button></form>`;
+  return `<section class="card wide"><h2>Family pictures</h2>
+    ${has ? `<div class="fam-grid">${F.MOODS.map(([id, where]) => `<figure><img src="${f.images[id]}" alt=""><figcaption>${h(where)}</figcaption></figure>`).join('')}</div>` : '<p class="fine">Upload one photo of yourself, the two of you or the whole family. Gemini turns it into doodles for every mood in the app: cheering, smiling, celebrating, together, thinking and asking.</p>'}
+    ${f.key ? `<div class="row"><label class="btn primary">${has ? 'New photo' : 'Choose a photo'}<input type="file" accept="image/*" data-act="familyphoto" hidden></label>${has ? '<button class="btn warn" data-act="familyremove">Remove pictures</button>' : ''}<button class="link" data-act="familykey">Change API key</button></div>
+    <p class="fine">Only the photo you choose is sent to Google to draw the doodles. The finished pictures are kept on your devices and in your encrypted vault.</p>` : keyForm}
+  </section>`;
+}
+function previewSheet() {
+  const p = state.pendingFamily;
+  sheet(`<h2>Your family doodles</h2><p class="fine">Check each one. Redraw any you don't like, then save.</p>
+  <div class="fam-grid big">${F.MOODS.map(([id, where]) => `<figure><img src="${p.set[id]}" alt=""><figcaption>${h(where)}</figcaption><button class="link" data-redo="${id}">Redraw</button></figure>`).join('')}</div>
+  <div class="row"><button class="btn primary" data-act="familysave">Save pictures</button><button class="btn" data-act="familycancel">Discard</button></div>`);
+}
+async function generateFamily(file) {
+  const f = state.family || {};
+  const raw = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(new Error('Could not read the photo.')); r.readAsDataURL(file); });
+  const photo = await F.shrink(raw, 1024);
+  showBusy('Sending the photo to Gemini…');
+  try {
+    const set = await F.makeSet({ key: f.key, model: cfg.geminiModel || 'gemini-3.1-flash-image', photo, onStep: (i, n) => showBusy(`Drawing your family… ${i} of ${n}`) });
+    state.pendingFamily = { photo, set }; previewSheet();
+  } catch (e) { toast(e.message); } finally { hideBusy(); }
 }
 
 // ---------------- import ----------------
@@ -309,7 +355,7 @@ const exportRules = () => deliver(new Blob([JSON.stringify(rulesPayload(), null,
 
 // ---------------- backup ----------------
 function backupPayload() {
-  return { app: 'finance-insights', version: 2, exportedAt: new Date().toISOString(), tx: state.tx, statements: state.statements, settings: state.settings };
+  return { app: 'finance-insights', version: 2, exportedAt: new Date().toISOString(), tx: state.tx, statements: state.statements, settings: state.settings, family: state.family };
 }
 async function exportBackup() {
   const name = `finance-backup-${new Date().toISOString().slice(0, 10)}.json`;
@@ -336,6 +382,7 @@ async function restoreBackup(p) {
     inc.profile.lines = [...inc.profile.lines, ...localOwn.filter((l) => !have.has(l.id))];
   }
   stampDiff(local, inc); state.settings = inc; await saveSettings();
+  if (p.family && (!state.family || (p.family.stamp || 0) > (state.family.stamp || 0))) { state.family = p.family; await saveFamily(); }
   return `backup restored (${p.tx.length} bookings)${keptV + keptT ? `; kept ${keptV + keptT} answer${keptV + keptT > 1 ? 's' : ''} made on this phone` : ''}`;
 }
 // iOS: the share sheet lets the file go to Files / iCloud Drive. Elsewhere: plain download.
@@ -472,6 +519,7 @@ function overviewView() {
   return `${topbar('Overview')}${backupBanner()}${periodPicker()}
   <div class="overview">
   <section class="hero">
+    ${familyFig(moodFor(s.saved / Math.max(1, ms.length)), true)}
     <div class="hero-head"><p>${h(periodLabel(p.key, p.mode))}</p><span class="badge${s.saved < 0 ? ' neg' : ''}">${s.saved >= 0 ? `${rate}% of earnings saved` : s.spent > s.earned ? 'Spent more than earned' : 'Sent more to India than you saved'}</span></div>
     <div class="saved-fig${s.saved < 0 ? ' neg' : ''}" data-count="${s.saved}">${eur(s.saved)}</div>
     <p class="saved-cap">saved${p.mode === 'all' ? ' in total' : ''}</p>
@@ -585,7 +633,7 @@ function shortDates(dates) {
 const SEG = [['fixed', 'Fixed'], ['variable', 'Variable'], ['onetime', 'One-time'], ['income', 'Income'], ['search', 'Search']];
 function monthsView() {
   const seg = `<div class="seg" role="tablist">${SEG.map(([k, l]) => `<button role="tab" aria-selected="${state.section === k}" data-section="${k}">${l}</button>`).join('')}</div>`;
-  if (state.section === 'search') return topbar('Months') + seg + searchView();
+  if (state.section === 'search') return topbar('Months') + familyStrip('together') + seg + searchView();
   const a = state.agg; const ms = a.months;
   const secs = state.section === 'income' ? ['income', 'india', 'passthrough', 'tosav', 'fromsav'] : [state.section];
   const ls = a.order.filter((l) => secs.includes(l.sec));
@@ -603,7 +651,7 @@ function monthsView() {
   const foot = state.section === 'income'
     ? [['Earned income', 'earned'], ['Total spent', 'spent'], ['Sent to India (own money)', 'india'], ['Saved', 'saved'], ['Moved to savings, net', 'netToSav'], ['Kept in account', 'kept']].map(([l, k]) => footRow(l, k)).join('')
     : footRow('Total', state.section);
-  return `${topbar('Months')}${seg}<div class="tablewrap"><table class="grid"><thead><tr><th>Line</th>${ms.map((m) => `<th>${monthLabel(m, true)}</th>`).join('')}<th>Total</th></tr></thead><tbody>${rows || `<tr><td colspan="${ms.length + 2}" class="fine">Nothing in this section yet.</td></tr>`}</tbody><tfoot>${foot}</tfoot></table></div>
+  return `${topbar('Months')}${familyStrip('together')}${seg}<div class="tablewrap"><table class="grid"><thead><tr><th>Line</th>${ms.map((m) => `<th>${monthLabel(m, true)}</th>`).join('')}<th>Total</th></tr></thead><tbody>${rows || `<tr><td colspan="${ms.length + 2}" class="fine">Nothing in this section yet.</td></tr>`}</tbody><tfoot>${foot}</tfoot></table></div>
   <p class="fine pad">Tap an amount to see its bookings and move any of them to another line.</p>`;
 }
 function searchView() {
@@ -680,10 +728,10 @@ function reviewView() {
   const passHtml = pf.length ? `<section class="pad"><h1 class="h1">Forwarded to India?</h1><p class="fine">Money came in from your savings account in a month when you also sent money to India. If you passed it on, it is not a top-up and does not reduce your savings.</p></section>
   ${pf.map((t) => `<section class="card flag"><div><b>${h(t.vendor)}</b><span>${deDate(t.date)}, ${eur(t.india)} sent to India that month</span></div><strong class="pos">${eur(t.amount)}</strong>
     <div class="row"><button class="btn primary" data-passyes="${h(t.id)}">Yes, forwarded</button><button class="btn" data-dismiss="${h(t.id)}">No, a top-up</button></div></section>`).join('')}` : '';
-  if (!r.length && !f.length && !pf.length) return `${topbar('Review')}<section class="empty small"><h1>Nothing to review</h1><p>Every booking matched a rule or one of your answers, and nothing looks like a one-time spend.</p></section>`;
+  if (!r.length && !f.length && !pf.length) return `${topbar('Review')}${familyStrip('thinking')}<section class="empty small"><h1>Nothing to review</h1><p>Every booking matched a rule or one of your answers, and nothing looks like a one-time spend.</p></section>`;
   const byV = {};
   for (const t of r) (byV[t.vkey] ||= []).push(t);
-  return `${topbar('Review')}${passHtml}${r.length ? `<section class="pad"><h1 class="h1">Unknown vendors</h1><p class="fine">Pick a line once; with "Apply to every booking" ticked, the app uses it for this vendor from now on.</p></section>
+  return `${topbar('Review')}${familyStrip('thinking')}${passHtml}${r.length ? `<section class="pad"><h1 class="h1">Unknown vendors</h1><p class="fine">Pick a line once; with "Apply to every booking" ticked, the app uses it for this vendor from now on.</p></section>
   ${Object.values(byV).map((ts) => `<section class="card">${txList(ts.slice(0, 1), true)}${ts.length > 1 ? `<p class="fine">${ts.length} bookings from this vendor: ${ts.map((t) => eur(t.amount)).join(', ')}</p>` : ''}</section>`).join('')}` : ''}
   ${f.length ? `<section class="pad"><h1 class="h1">Possible one-time items</h1><p class="fine">These are at least three times the usual amount for their line.</p></section>
   ${f.map((t) => `<section class="card flag"><div><b>${h(t.vendor)}</b><span>${deDate(t.date)} · ${h(lineLabel(t.line))} · usually around ${eur(t.median)}</span></div><strong>${eur(t.amount)}</strong>
@@ -705,7 +753,7 @@ function dataView() {
   const nAns = live(s.vendorRules).length + live(s.txRules).length;
   const own = (s.profile?.lines || []).filter((l) => l.id.startsWith('c.')).length;
   const theme = currentTheme();
-  return `${topbar('Data')}<div class="data-grid">${cloudCard()}<section class="card">
+  return `${topbar('Data')}${familyStrip('question')}<div class="data-grid">${cloudCard()}${familyCard()}<section class="card">
     <h2>Add statements</h2>
     <p class="fine">PDF Kontoauszug or CSV export. Overlapping files are fine: bookings already stored are skipped.</p>
     <label class="btn primary">Choose files<input type="file" accept=".pdf,.csv,.json,application/pdf,text/csv,application/json" multiple data-act="import" hidden></label>
@@ -798,6 +846,11 @@ document.addEventListener('click', async (e) => {
   }
   if (ds.tx) { const t = txById(ds.tx); sheet(`<h2>${h(t.vendor)}</h2>${txList([t])}<button class="btn" data-act="close">Done</button>`); return; }
   if (ds.onetime) { oneTimeSheet(ds.onetime); return; }
+  if (ds.redo) {
+    const id = ds.redo; const p = state.pendingFamily; showBusy('Redrawing…');
+    try { p.set[id] = await F.redoOne({ key: state.family.key, model: cfg.geminiModel || 'gemini-3.1-flash-image', photo: p.photo, base: p.set.base, id }); previewSheet(); } catch (e) { toast(e.message); } finally { hideBusy(); }
+    return;
+  }
   if (ds.passyes) { const id = ds.passyes; await change('Marked as forwarded to India', (s) => { s.txRules[id] = 'pt.in'; }); return; }
   if (ds.dismiss) { const id = ds.dismiss; await change('Kept as regular spend', (s) => { (s.flagDismissed ||= {})[id] = true; }); return; }
   if (ds.deltrip) { const i = +ds.deltrip; await change('Trip removed', (s) => { s.trips.splice(i, 1); }); return; }
@@ -823,6 +876,14 @@ document.addEventListener('click', async (e) => {
   else if (act === 'excel') await exportExcel();
   else if (act === 'exportrules') await exportRules();
   else if (act === 'manage') manageSheet();
+  else if (act === 'familysave') {
+    const { base, ...images } = state.pendingFamily.set;
+    state.family = { ...(state.family || {}), images, stamp: Date.now() }; state.pendingFamily = null;
+    await saveFamily(); closeSheet(); lastMood = null; render(); markChanged(); toast('Family pictures saved');
+  }
+  else if (act === 'familycancel') { state.pendingFamily = null; closeSheet(); }
+  else if (act === 'familyremove') { if (!confirm('Remove the family pictures from all devices?')) return; state.family = { ...(state.family || {}), images: {}, stamp: Date.now() }; await saveFamily(); render(); markChanged(); }
+  else if (act === 'familykey') { state.family = { ...(state.family || {}), key: '' }; render(); }
   else if (act === 'gsignin') C.signIn(cfg.googleClientId, 'sync');
   else if (act === 'syncnow') await syncNow();
   else if (act === 'pickvault') await cloudAction('Opening Google Drive…', async () => { const id = await C.pickVault(cloud.token.token, cfg.googleApiKey, cfg.googleAppId); if (id) { cloud.meta = { fileId: id, owner: false }; await saveCloudMeta(); } });
@@ -840,12 +901,13 @@ document.addEventListener('click', async (e) => {
   else if (act === 'wipe') {
     if (!confirm('Erase all bookings, statements, rules and answers on this phone?')) return;
     await clear('tx'); await clear('statements'); await clear('kv');
-    state.tx = []; state.statements = []; state.settings = fresh(); state.lastBackup = null; state.undo = []; cloud.meta = null; cloud.key = null; cloud.token = null; refreshStatus(); recompute(); render();
+    state.tx = []; state.statements = []; state.settings = fresh(); state.lastBackup = null; state.undo = []; cloud.meta = null; cloud.key = null; cloud.token = null; state.family = null; refreshStatus(); recompute(); render();
   }
 });
 document.addEventListener('change', async (e) => {
   const t = e.target;
   if (t.dataset.act === 'import' && t.files.length) { await importFiles([...t.files]); t.value = ''; return; }
+  if (t.dataset.act === 'familyphoto' && t.files.length) { const file = t.files[0]; t.value = ''; await generateFamily(file); return; }
   if (t.dataset.txline !== undefined && t.value) {
     const allBox = document.querySelector(`[data-txall="${CSS.escape(t.dataset.txline)}"]`);
     const all_ = !!(allBox && allBox.checked);
@@ -886,6 +948,9 @@ document.addEventListener('submit', async (e) => {
       s.txRules[txId] = existing || createLine(s, { label, sec: 'onetime', group: '' });
       if (s.flagDismissed) s.flagDismissed[txId] = null;
     });
+  } else if (f.dataset.act === 'geminikey') {
+    const k = fd.get('key').trim(); if (!k || k.startsWith('••')) { render(); return; }
+    state.family = { ...(state.family || {}), key: k, stamp: Date.now() }; await saveFamily(); render(); markChanged(); toast('Gemini key saved');
   } else if (f.dataset.act === 'createvault') {
     if (fd.get('p1') !== fd.get('p2')) { alert('The two passphrases are different.'); return; }
     await cloudAction('Creating your encrypted vault…', () => createVaultFlow(fd.get('p1'), !!fd.get('remember')));
