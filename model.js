@@ -113,6 +113,9 @@ export const DEFAULT_SETTINGS = {
   txRules: {},       // tx id -> lineId (single-booking overrides)
   trips: [],         // [{ name, from, to, scope: 'dining'|'all' }] — spend in these dates gets its own trip line
   flagDismissed: {}, // tx id -> true: large bookings confirmed as regular spend
+  notes: {},         // tx id -> your note on that booking
+  budgets: {},       // variable group -> monthly budget in €
+  goal: null,        // { year, amount } yearly savings goal
   profile: null,     // the user's rules file
 };
 export const emptyProfile = () => ({ app: 'finance-insights-rules', version: 1, lines: [], rules: [], notes: {}, sheetNames: {}, trips: [], startMonth: null });
@@ -151,6 +154,8 @@ export function applyProfile(profile) {
     const b = before ? out.findIndex((l) => l.id === before) : -1;
     if (b >= 0) { out.splice(b, 0, line); continue; }
     let idx = after ? out.findIndex((l) => l.id === after) : -1;
+    // A new line joins the end of its own group (e.g. Supermarkets), else the end of its section.
+    if (idx < 0 && line.group) out.forEach((l, i) => { if (l.sec === line.sec && l.group === line.group) idx = i; });
     if (idx < 0) out.forEach((l, i) => { if (l.sec === line.sec) idx = i; });
     out.splice(idx + 1, 0, line);
   }

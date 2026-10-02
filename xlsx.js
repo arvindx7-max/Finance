@@ -246,15 +246,15 @@ export function buildWorkbook(agg, recon, settings) {
 
   // ---- Transactions (real Excel dates) ----
   const tx = new Sheet('Transactions'); sheets.push(tx);
-  ['Booking date', 'Value date', 'Amount €', 'Section', 'Line', 'Vendor', 'Booking text'].forEach((h, i) => tx.set(i, 1, h, S.hdr));
-  tx.cols = [13, 13, 12, 20, 40, 30, 90]; tx.freeze = [0, 1];
+  ['Booking date', 'Value date', 'Amount €', 'Section', 'Line', 'Vendor', 'Note', 'Booking text'].forEach((h, i) => tx.set(i, 1, h, S.hdr));
+  tx.cols = [13, 13, 12, 20, 40, 30, 30, 90]; tx.freeze = [0, 1];
   const serial = (iso) => { if (!iso) return null; const [y, m, d] = iso.split('-').map(Number); return (Date.UTC(y, m - 1, d) - Date.UTC(1899, 11, 30)) / 86400000; };
   [...agg.rows].sort((a, b) => a.date.localeCompare(b.date) || a.amount - b.amount).forEach((t, i) => {
     const rr = i + 2;
     tx.set(0, rr, serial(t.date), S.date); tx.set(1, rr, serial(t.valuta), S.date); tx.set(2, rr, t.amount, S.num);
     const meta = lineMeta(t.line);
     tx.set(3, rr, meta ? SECTIONS[meta.sec] : 'Needs review', S.text); tx.set(4, rr, lineLabel(t.line), S.text);
-    tx.set(5, rr, t.vendor, S.text); tx.set(6, rr, t.text, S.text);
+    tx.set(5, rr, t.vendor, S.text); tx.set(6, rr, (settings.notes || {})[t.id] || '', S.text); tx.set(7, rr, t.text, S.text);
   });
 
   return zip(packageFiles(sheets));
