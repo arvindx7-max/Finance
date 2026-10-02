@@ -77,15 +77,23 @@ function stampDiff(before, after) {
   for (const w of WHOLE) if (!same(before[w], after[w])) after.stamps[w] = now;
 }
 const live = (obj) => Object.entries(obj || {}).filter(([, v]) => v !== null && v !== undefined);
+// Newer change wins. With no change dates on either side (data from before dates existed),
+// real data beats an empty default, and otherwise the shared vault wins over this device.
+const isEmpty = (v) => v === null || v === undefined || (Array.isArray(v) ? !v.length : typeof v === 'object' && !Object.keys(v).length);
 function mergeSettings(l, r) {
   const out = { ...fresh(), ...r, ...l, stamps: {} };
   const st = (s, k) => (s.stamps || {})[k] || 0;
-  const pick = (k, inL, inR) => { const ls = st(l, k), rs = st(r, k); out.stamps[k] = Math.max(ls, rs); return rs > ls ? 'r' : ls > rs ? 'l' : (inL ? 'l' : inR ? 'r' : 'l'); };
+  const pick = (k, lv, rv) => {
+    const ls = st(l, k), rs = st(r, k); out.stamps[k] = Math.max(ls, rs);
+    if (rs !== ls) return rs > ls ? rv : lv;
+    if (isEmpty(lv) !== isEmpty(rv)) return isEmpty(lv) ? rv : lv;
+    return rv === undefined ? lv : rv;
+  };
   for (const [m, p] of MAPS) {
     out[m] = {}; const L = l[m] || {}, R = r[m] || {};
-    for (const k of new Set([...Object.keys(L), ...Object.keys(R)])) { const side = pick(`${p}:${k}`, k in L, k in R); out[m][k] = (side === 'r' ? R[k] : L[k]) ?? null; }
+    for (const k of new Set([...Object.keys(L), ...Object.keys(R)])) out[m][k] = pick(`${p}:${k}`, L[k], R[k]) ?? null;
   }
-  for (const w of WHOLE) { const side = pick(w, l[w] !== undefined, r[w] !== undefined); out[w] = side === 'r' ? r[w] : l[w]; }
+  for (const w of WHOLE) out[w] = pick(w, l[w], r[w]);
   return out;
 }
 // Bookings: same id = same booking; otherwise matched by date + amount + vendor, count for count.
