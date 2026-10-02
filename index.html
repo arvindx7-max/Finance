@@ -10,7 +10,6 @@
 <meta name="theme-color" content="#EEF2F8">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<link rel="icon" type="image/svg+xml" href="logo-icon.svg">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
 <title>Finances</title>
 <script>
@@ -215,26 +214,6 @@ input[type=search] { width: 100%; font: inherit; font-size: 16px; padding: 11px 
 .stack input[type=password] { letter-spacing: .08em; }
 .stack label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--ink); }
 
-/* ---------- family doodles ---------- */
-.family { margin: 0; flex: none; width: 92px; height: 92px; border-radius: 22px; background: #FFFFFF; border: 1px solid var(--line); overflow: hidden; display: grid; place-items: center; }
-.family img { width: 100%; height: 100%; object-fit: contain; display: block; }
-.family.wide { float: right; width: 112px; height: 112px; margin: -4px -4px 8px 12px; }
-.family.pop { animation: pop .55s cubic-bezier(.2,.9,.3,1.3) both; }
-.family.pop.bounce img { animation: bounce .9s .45s ease-in-out 2; }
-@keyframes pop { from { transform: scale(.85) rotate(-3deg); opacity: 0; } to { transform: none; opacity: 1; } }
-@keyframes bounce { 0%, 100% { transform: translateY(0); } 40% { transform: translateY(-7px); } 70% { transform: translateY(1px); } }
-.hero .family.wide + .hero-head { flex-direction: column; align-items: flex-start; gap: 8px; }
-.family-strip { display: flex; align-items: center; gap: 14px; margin: 6px 12px 4px; }
-.family-strip p { margin: 0; font-family: var(--num); font-weight: 700; font-size: 18px; letter-spacing: -0.01em; }
-.fam-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 10px; margin: 0 0 12px; }
-.fam-grid.big { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
-.fam-grid figure { margin: 0; text-align: center; }
-.fam-grid img { width: 100%; aspect-ratio: 1; object-fit: contain; background: #FFFFFF; border: 1px solid var(--line); border-radius: 16px; display: block; }
-.fam-grid figcaption { font-size: 11px; color: var(--muted); margin-top: 4px; line-height: 1.3; }
-.fam-grid .link { font-size: 13px; margin-top: 2px; }
-@media (min-width: 960px) { .family { width: 120px; height: 120px; } .family.wide { width: 140px; height: 140px; } }
-@media (prefers-reduced-motion: reduce) { .family.pop, .family.pop.bounce img { animation: none; } }
-
 /* ---------- navigation ---------- */
 .tabbar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-around; background: color-mix(in srgb, var(--surface) 86%, transparent); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); border-top: 1px solid var(--line); padding: 6px 4px calc(6px + env(safe-area-inset-bottom)); z-index: 5; }
 .tabbar .brand { display: none; }
@@ -281,7 +260,7 @@ input[type=search] { width: 100%; font: inherit; font-size: 16px; padding: 11px 
 <body>
 <div id="busy" hidden></div>
 <nav class="tabbar" aria-label="Sections">
-  <div class="brand"><img src="logo-icon.svg" alt="AM" width="56" height="56"></div>
+  <div class="brand"><img src="logo-icon.png" alt="Logo" width="56" height="56"></div>
   <button data-tab="overview" aria-current="page"><svg viewBox="0 0 24 24"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2"/></svg>Overview</button>
   <button data-tab="months"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 4v16"/></svg>Months</button>
   <button data-tab="review"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg>Review<span id="review-badge" hidden>0</span></button>
