@@ -3,6 +3,7 @@ import { aggregate, reconcile, DEFAULT_SETTINGS, emptyProfile, lines, SECTIONS, 
 import { buildWorkbook } from './xlsx.js';
 import * as C from './cloud.js';
 import * as I from './insights.js';
+import * as L from './lock.js';
 
 // ---------------- storage (IndexedDB) ----------------
 const DB_NAME = 'finance-insights';
@@ -21,15 +22,35 @@ function db() {
   return dbp;
 }
 async function all(store) { const d = await db(); return new Promise((res, rej) => { const q = d.transaction(store).objectStore(store).getAll(); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); }
-async function putMany(store, items) { const d = await db(); return new Promise((res, rej) => { const t = d.transaction(store, 'readwrite'); const s = t.objectStore(store); items.forEach((i) => s.put(i)); t.oncomplete = res; t.onerror = () => rej(t.error); }); }
-async function clear(store) { const d = await db(); return new Promise((res) => { const t = d.transaction(store, 'readwrite'); t.objectStore(store).clear(); t.oncomplete = res; }); }
+async function rawPut(store, items) { const d = await db(); return new Promise((res, rej) => { const t = d.transaction(store, 'readwrite'); const s = t.objectStore(store); items.forEach((i) => s.put(i)); t.oncomplete = res; t.onerror = () => rej(t.error); }); }
+async function rawClear(store) { const d = await db(); return new Promise((res) => { const t = d.transaction(store, 'readwrite'); t.objectStore(store).clear(); t.oncomplete = res; }); }
+async function rawDel(k) { const d = await db(); return new Promise((res) => { const t = d.transaction('kv', 'readwrite'); t.objectStore('kv').delete(k); t.oncomplete = res; }); }
 async function kvGet(k, def) { const d = await db(); return new Promise((res) => { const q = d.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => res(q.result ? q.result.v : def); q.onerror = () => res(def); }); }
+// With app lock on, bookings, statements, settings and the vault key never touch storage in the clear:
+// they live in memory and are written as one encrypted blob (see sealAll).
+const lock = { on: false, key: null, meta: null, vaultRaw: null };
+const SEALED_KV = new Set(['settings', 'undo', 'lastBackup', 'cloudKey']);
+async function putMany(store, items) {
+  if (lock.on && (store !== 'kv' || items.every((i) => SEALED_KV.has(i.k)))) { scheduleSeal(); return; }
+  return rawPut(store, items);
+}
+async function clear(store) { if (lock.on && store !== 'kv') { scheduleSeal(); return; } return rawClear(store); }
 const kvSet = (k, v) => putMany('kv', [{ k, v }]);
+let sealTimer;
+function scheduleSeal() { clearTimeout(sealTimer); sealTimer = setTimeout(sealAll, 250); }
+async function sealAll() {
+  clearTimeout(sealTimer);
+  if (!lock.on || !lock.key) return;
+  const blob = await L.seal({ tx: state.tx, statements: state.statements, settings: state.settings, undo: state.undo, lastBackup: state.lastBackup, vaultRaw: lock.vaultRaw }, lock.key);
+  await rawPut('kv', [{ k: 'sealed', v: blob }]);
+}
 
 // ---------------- state ----------------
 const fresh = () => structuredClone(DEFAULT_SETTINGS);
 const state = { tx: [], statements: [], settings: fresh(), lastBackup: null, tab: 'overview', period: { mode: 'month', key: null }, section: 'fixed', q: '', agg: null, undo: [] };
 async function load() {
+  lock.meta = await kvGet('lockMeta', null); lock.on = !!lock.meta;
+  if (lock.on) { recompute(); return; } // data stays sealed until Face ID unlocks it
   state.tx = await all('tx');
   state.statements = await all('statements');
   state.settings = { ...fresh(), ...(await kvGet('settings', {})) };
@@ -112,7 +133,7 @@ function mergeTx(local, remote) {
 
 // ---------------- cloud sync (Google Drive, encrypted) ----------------
 const cfg = window.FIN_CONFIG || {};
-const cloud = { meta: null, key: null, token: null, status: 'off', msg: '', busy: false, dirty: false };
+const cloud = { meta: null, key: null, token: null, status: 'off', msg: '', busy: false, dirty: false, rev: 0 };
 const cloudReady = () => !!cfg.googleClientId;
 const tokenOk = () => cloud.token && cloud.token.exp > Date.now();
 async function loadCloud() {
@@ -141,6 +162,7 @@ async function syncNow(quiet = false) {
   refreshStatus();
   if (cloud.status !== 'synced' || cloud.busy) { if (!quiet) render(); return; }
   cloud.busy = true; cloud.status = 'syncing'; if (!quiet) render(); setPill();
+  const startRev = cloud.rev; // changes made while this sync runs are picked up by a follow-up sync
   try {
     const m = await C.fileMeta(cloud.token.token, cloud.meta.fileId);
     let remote = null;
@@ -162,17 +184,20 @@ async function syncNow(quiet = false) {
       const res = await C.updateVault(cloud.token.token, cloud.meta.fileId, await C.seal(statePayload(), cloud.key, cloud.meta.salt, cloud.meta.iter));
       cloud.meta.remoteModified = res.modifiedTime;
     }
-    cloud.dirty = false; cloud.meta.lastSync = new Date().toISOString(); await saveCloudMeta();
+    cloud.dirty = cloud.rev !== startRev; cloud.meta.lastSync = new Date().toISOString(); await saveCloudMeta();
     cloud.status = 'synced'; cloud.msg = '';
   } catch (e) {
     if (e.code === 401) { cloud.token = null; await kvSet('gtoken', null); }
     cloud.status = e.code === 401 ? 'signin' : 'error'; cloud.msg = e.message;
-  } finally { cloud.busy = false; render(); }
+  } finally {
+    cloud.busy = false; render();
+    if (cloud.dirty && cloud.status === 'synced') { clearTimeout(pushTimer); pushTimer = setTimeout(() => syncNow(true), 500); }
+  }
 }
 let pushTimer;
 function markChanged() {
   if (!cloud.meta || !cloud.meta.fileId) return;
-  cloud.dirty = true; saveCloudMeta(); clearTimeout(pushTimer); pushTimer = setTimeout(() => syncNow(true), 1500); setPill();
+  cloud.dirty = true; cloud.rev++; saveCloudMeta(); clearTimeout(pushTimer); pushTimer = setTimeout(() => syncNow(true), 1500); setPill();
 }
 async function createVaultFlow(pass, remember) {
   const salt = C.newSalt(); const key = await C.deriveKey(pass, salt);
@@ -220,13 +245,13 @@ function cloudCard() {
     <button class="link" data-act="forgetvault">Use a different vault</button>`;
   else if (s === 'signin') body = `<p class="fine">Google sign-in lasts about an hour. Sign in again to sync${cloud.dirty ? '; your latest changes are waiting' : ''}.</p><button class="btn primary" data-act="gsignin">Sign in again</button>`;
   else body = `<p class="fine">${s === 'error' ? `<span class="bad">${h(cloud.msg)}</span> ` : ''}Encrypted vault in Google Drive (${cloud.meta.owner === false ? 'shared with you' : 'yours'}). Changes on this device sync automatically.</p>
-    <div class="row"><button class="btn primary" data-act="syncnow">Sync now</button><button class="btn" data-act="lockvault">Lock this device</button><button class="btn warn" data-act="disconnect">Disconnect</button></div>
+    <div class="row"><button class="btn primary" data-act="syncnow">Sync now</button>${lock.on ? '' : '<button class="btn" data-act="lockvault">Lock this device</button><button class="btn warn" data-act="disconnect">Disconnect</button>'}</div>${lock.on ? '<p class="fine">Turn off the app lock below to change sync settings on this device.</p>' : ''}
     ${cloud.meta.owner !== false ? '<p class="fine">To share: in Google Drive, share the file finance-vault.json with your wife (Editor), then give her the passphrase in person.</p>' : ''}`;
   return `<section class="card wide"><h2>Cloud sync</h2>${body}</section>`;
 }
 
 // ---------------- insights tab ----------------
-const APP_VERSION = 'v13';
+const APP_VERSION = 'v14';
 const pct = (x) => `${Math.round(x * 100)}%`;
 function bar(ratio, tone) { const w = Math.min(100, Math.max(0, ratio * 100)); return `<span class="pbar ${tone}"><i style="width:${w.toFixed(1)}%"></i></span>`; }
 function insightsView() {
@@ -276,7 +301,7 @@ function insightsView() {
 function budgetSheet() {
   const groups = [...new Set(state.agg.order.filter((l) => l.sec === 'variable').map((l) => l.group || 'Other'))];
   const b = state.settings.budgets || {};
-  const avg = (g) => { const ms = state.agg.months; return ms.length ? I.budgets(state.agg, ms, {}).find((x) => x.group === g).spent / ms.length : 0; };
+  const avg = (g) => { const ms = state.agg.months; if (!ms.length) return 0; const f = I.budgets(state.agg, ms, {}).find((x) => x.group === g); return (f ? f.spent : 0) / ms.length; };
   sheet(`<h2>Monthly budgets</h2><p class="fine">Leave a field empty for no budget. Your average so far is shown as a guide.</p>
   <form class="stack" data-act="budgets">${groups.map((g) => `<label>${h(g)} <small>average ${eur(avg(g))}</small><input type="number" inputmode="decimal" min="0" step="10" name="${h(g)}" value="${b[g] || ''}" placeholder="—"></label>`).join('')}
   <button class="btn primary">Save budgets</button><button type="button" class="btn" data-act="close">Cancel</button></form>`);
@@ -288,8 +313,110 @@ function goalSheet() {
   <button class="btn primary">Save goal</button>${state.settings.goal ? '<button type="button" class="btn warn" data-act="cleargoal">Remove goal</button>' : ''}<button type="button" class="btn" data-act="close">Cancel</button></form>`);
 }
 // Drill-down: bookings behind a chart bar or a vendor
-function drillSheet(title, txs) {
-  sheet(`<h2>${h(title)}</h2><p class="fine">${txs.length} booking${txs.length === 1 ? '' : 's'} · ${eur(txs.reduce((s, t) => s + t.amount, 0))}</p>${txList(txs)}<button class="btn" data-act="close">Done</button>`);
+function drillSheet(title, ids) {
+  const html = () => { const txs = ids.map(txById).filter(Boolean); return `<h2>${h(title)}</h2><p class="fine">${txs.length} booking${txs.length === 1 ? '' : 's'} · ${eur(txs.reduce((s, t) => s + t.amount, 0))}</p>${txList(txs)}<button class="btn" data-act="close">Done</button>`; };
+  sheet(html(), html);
+}
+
+// ---------------- app lock (Face ID / Touch ID) ----------------
+function lockView() {
+  return `<section class="lockscreen"><img src="logo-icon.png" alt="" width="88" height="88"><h1>Finances is locked</h1>
+    <p class="fine">Your data on this device is encrypted. Unlock with Face ID or Touch ID.</p>
+    <button class="btn primary" data-act="unlockapp">Unlock</button>
+    <button class="link" data-act="lockfallback">Use my passphrase instead</button></section>`;
+}
+async function unlockApp() {
+  try {
+    const key = await L.unlock(lock.meta);
+    const blob = await kvGet('sealed', null);
+    const d = blob ? await L.open(blob, key) : { tx: [], statements: [], settings: {}, undo: [] };
+    lock.key = key; lock.vaultRaw = d.vaultRaw || null;
+    state.tx = d.tx || []; state.statements = d.statements || []; state.settings = { ...fresh(), ...(d.settings || {}) };
+    state.undo = d.undo || []; state.lastBackup = d.lastBackup || null;
+    if (lock.vaultRaw) cloud.key = await L.importRaw(lock.vaultRaw);
+    refreshStatus(); recompute(); render();
+    if (cloud.status === 'synced') syncNow(true);
+  } catch (e) { toast(e.message); }
+}
+async function lockFallback() {
+  const ok = await ask({ title: 'Use your passphrase instead?', text: 'This turns off the app lock on this device and restores your data from your encrypted vault in Google Drive. You will sign in with Google and enter your vault passphrase. You can set up Face ID again afterwards.', ok: 'Continue', danger: true });
+  if (!ok) return;
+  await rawDel('sealed'); await rawDel('lockMeta'); await rawClear('tx'); await rawClear('statements');
+  location.reload();
+}
+async function enableLock(pass) {
+  if (!cloud.meta || !cloud.meta.fileId || !cloud.key) throw new Error('Turn on cloud sync first, so your data can always be restored with your passphrase.');
+  // check the passphrase against the vault key this device already uses
+  const vk = await C.deriveKey(pass, cloud.meta.salt, cloud.meta.iter || 310000, true);
+  const probe = await C.seal({ ok: 1 }, cloud.key, cloud.meta.salt);
+  await C.unseal(probe, vk).catch(() => { throw new Error("That passphrase doesn't open your vault."); });
+  const { meta, key } = await L.setup();
+  lock.vaultRaw = await L.exportRaw(vk); lock.key = key; lock.meta = meta; lock.on = true;
+  await sealAll(); await rawPut('kv', [{ k: 'lockMeta', v: meta }]);
+  for (const k of SEALED_KV) await rawDel(k);
+  await rawClear('tx'); await rawClear('statements');
+}
+async function disableLock() {
+  lock.on = false;
+  await rawPut('tx', state.tx); await rawPut('statements', state.statements);
+  await rawPut('kv', [{ k: 'settings', v: state.settings }, { k: 'undo', v: state.undo }, { k: 'lastBackup', v: state.lastBackup }]);
+  if (cloud.key) await rawPut('kv', [{ k: 'cloudKey', v: cloud.key }]);
+  await rawDel('sealed'); await rawDel('lockMeta');
+  lock.key = null; lock.meta = null; lock.vaultRaw = null;
+}
+function lockCard() {
+  if (lock.on) return `<section class="card"><h2>App lock</h2><p class="fine">On since ${deDate(lock.meta.since.slice(0, 10))}. The data on this device is encrypted and opens with Face ID or Touch ID. The app locks again after 5 minutes in the background.</p><button class="btn warn" data-act="lockoff">Turn off app lock</button></section>`;
+  const ready = cloud.meta && cloud.meta.fileId && cloud.key;
+  return `<section class="card"><h2>App lock</h2><p class="fine">Encrypt the data on this device and open the app with Face ID or Touch ID.${ready ? ' Enter your vault passphrase to confirm it is you.' : ' Needs cloud sync, so your data can always be restored with your passphrase.'}</p>
+    ${ready ? `<form class="stack" data-act="lockon"><label>Vault passphrase<input type="password" name="p" required autocomplete="current-password"></label><button class="btn primary">Turn on Face ID lock</button></form>` : ''}</section>`;
+}
+
+// ---------------- own dialogs (instead of browser pop-ups) ----------------
+let dialogDone = null;
+function ask({ title, text = '', ok = 'OK', danger = false, input = null, cancel = 'Cancel' }) {
+  return new Promise((res) => {
+    const d = $('#dialog');
+    d.innerHTML = `<div class="dialog-card" role="alertdialog" aria-modal="true" aria-labelledby="dlg-t"><h2 id="dlg-t">${h(title)}</h2>${text ? `<p>${h(text)}</p>` : ''}
+      ${input !== null ? `<input id="dlg-in" type="text" value="${h(input)}" autocomplete="off">` : ''}
+      <div class="row"><button class="btn${danger ? ' warn' : ' primary'}" data-dlg="ok">${h(ok)}</button>${cancel ? `<button class="btn" data-dlg="cancel">${h(cancel)}</button>` : ''}</div></div>`;
+    d.hidden = false; dialogDone = (v) => { d.hidden = true; d.innerHTML = ''; dialogDone = null; res(v); };
+    setTimeout(() => (d.querySelector('#dlg-in') || d.querySelector('[data-dlg=ok]')).focus(), 30);
+  });
+}
+
+// ---------------- keyword rules (made in the app) ----------------
+const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const userRules = () => ((state.settings.profile || {}).rules || []).filter((r) => r.mine);
+function ruleMatches(kw, sign) {
+  const re = new RegExp(escRe(kw), 'i');
+  return state.agg.rows.filter((t) => re.test(t.text) && (!sign || (sign === '+' ? t.amount > 0 : t.amount < 0)));
+}
+function addUserRule(s, kw, line, sign) {
+  s.profile ||= emptyProfile();
+  const rule = { line, any: [escRe(kw)], mine: true, label: kw, since: new Date().toISOString().slice(0, 10) };
+  if (sign) rule.sign = sign;
+  s.profile.rules = [rule, ...(s.profile.rules || []).filter((r) => !(r.mine && r.label === kw))];
+}
+function ruleSheetHtml(kw = '', line = '', sign = '') {
+  const hits = kw.trim().length >= 2 ? ruleMatches(kw.trim(), sign) : [];
+  return `<h2>New keyword rule</h2><p class="fine">Every booking whose text contains these words goes to the chosen line, now and in future imports. Answers you gave for a specific vendor in Review still take priority.</p>
+  <form class="stack" data-act="saverule"><label>Booking text contains<input name="kw" value="${h(kw)}" required minlength="2" autocomplete="off" placeholder="e.g. Bakery or Indian Store"></label>
+  <label>Money<select name="sign"><option value="">In or out</option><option value="-"${sign === '-' ? ' selected' : ''}>Only money out</option><option value="+"${sign === '+' ? ' selected' : ''}>Only money in</option></select></label>
+  <label>Line<select name="line" required><option value=""${line ? '' : ' selected'}>Choose a line…</option>${lineOptions(line).replace('<optgroup label="Something else"><option value="__new">＋ New line…</option></optgroup>', '')}</select></label>
+  <p class="fine" id="rule-preview">${kw.trim().length >= 2 ? `Matches ${hits.length} booking${hits.length === 1 ? '' : 's'} so far${hits.length ? `: ${[...new Set(hits.map((t) => t.vendor))].slice(0, 4).map(h).join(', ')}` : ''}.` : 'Type at least 2 characters to see which bookings match.'}</p>
+  <button class="btn primary">Save rule</button><button type="button" class="btn" data-act="manage">Back</button></form>`;
+}
+
+// ---------------- bulk assign from search ----------------
+function bulkBar(n) {
+  if (!state.q.trim() || !n) return '';
+  return `<form class="bulk" data-act="bulk"><span>Move all ${n} match${n === 1 ? '' : 'es'} to</span><select name="line" required><option value="">Choose a line…</option>${lineOptions('').replace('<optgroup label="Something else"><option value="__new">＋ New line…</option></optgroup>', '')}</select>
+    <label class="check"><input type="checkbox" name="future"> Also for future bookings whose text contains "${h(state.q.trim())}"</label><button class="btn primary">Move</button></form>`;
+}
+function searchHits() {
+  const terms = state.q.toLowerCase().split(/\s+/).filter(Boolean);
+  const all = [...state.agg.rows].sort((x, y) => y.date.localeCompare(x.date));
+  return terms.length ? all.filter((t) => { const hay = `${t.vendor} ${t.text} ${n2(Math.abs(t.amount))} ${Math.abs(t.amount)} ${deDate(t.date)} ${lineLabel(t.line)} ${(state.settings.notes || {})[t.id] || ''}`.toLowerCase(); return terms.every((w) => hay.includes(w)); }) : all;
 }
 
 // ---------------- import ----------------
@@ -448,15 +575,26 @@ function toast(msg, canUndo = false) {
   t.innerHTML = `<span>${h(msg)}</span>${canUndo ? '<button data-act="undo">Undo</button>' : ''}`;
   t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 6000);
 }
-let sheetTimer;
-function sheet(html) {
+let sheetTimer; let sheetRefresh = null; let sheetOpener = null;
+// refresh = a function returning the sheet's html again, so the sheet updates after a change.
+function sheet(html, refresh = null) {
   clearTimeout(sheetTimer);
-  const s = $('#sheet'); $('#sheet-body').innerHTML = html; s.hidden = false;
-  requestAnimationFrame(() => s.classList.add('open'));
+  const s = $('#sheet'); const body = $('#sheet-body'); const reopen = !s.hidden;
+  if (!reopen) sheetOpener = document.activeElement;
+  body.innerHTML = html; sheetRefresh = refresh; s.hidden = false;
+  requestAnimationFrame(() => { s.classList.add('open'); if (!reopen) { const f = body.querySelector('h2'); if (f) { f.tabIndex = -1; f.focus({ preventScroll: true }); } } });
 }
 function closeSheet() {
   const s = $('#sheet'); if (s.hidden) return;
+  sheetRefresh = null;
   s.classList.remove('open'); clearTimeout(sheetTimer); sheetTimer = setTimeout(() => { s.hidden = true; }, 220);
+  if (sheetOpener && document.contains(sheetOpener)) sheetOpener.focus({ preventScroll: true });
+}
+function refreshSheet() {
+  const s = $('#sheet'); if (s.hidden || !sheetRefresh) return;
+  const body = $('#sheet-body'); const a = document.activeElement;
+  if (a && body.contains(a) && /^(INPUT|TEXTAREA)$/.test(a.tagName)) return; // never wipe what you are typing
+  const top = body.scrollTop; body.innerHTML = sheetRefresh(); body.scrollTop = top;
 }
 
 // ---------------- render ----------------
@@ -465,10 +603,19 @@ function render() {
   const n = state.agg.review.length + state.agg.flags.length + state.agg.passFlags.length;
   $('#review-badge').textContent = n; $('#review-badge').hidden = !n;
   const main = $('#main');
-  if (!state.tx.length && state.tab !== 'data') { main.innerHTML = emptyView(); return; }
+  document.body.classList.toggle('locked', lock.on && !lock.key);
+  if (lock.on && !lock.key) { main.innerHTML = lockView(); return; }
+  const view = `${state.tab}|${state.section}`; const same = view === lastView;
+  const oldWrap = main.querySelector('.tablewrap'); const left = same && oldWrap ? oldWrap.scrollLeft : null; const y = window.scrollY;
+  if (!state.tx.length && state.tab !== 'data') { main.innerHTML = emptyView(); lastView = view; return; }
   main.innerHTML = { overview: overviewView, months: monthsView, insights: insightsView, review: reviewView, data: dataView }[state.tab]();
+  const wrap = main.querySelector('.tablewrap'); if (wrap) wrap.scrollLeft = left ?? wrap.scrollWidth; // newest month in view
+  if (same) window.scrollTo(0, y);
+  lastView = view;
   if (state.tab === 'overview') animateCount();
+  refreshSheet();
 }
+let lastView = null;
 
 function emptyView() {
   return `${topbar('Finances')}<section class="empty">
@@ -526,7 +673,7 @@ function applyTheme(t) {
 }
 function isDark() { return document.documentElement.dataset.theme === 'dark' || (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches); }
 function topbar(title) {
-  return `<header class="topbar"><h1>${h(title)}</h1><div class="row">${cloudPill()}<button class="icon-btn" data-act="theme" aria-label="Switch to ${isDark() ? 'light' : 'dark'} theme">${isDark()
+  return `<header class="topbar"><h1>${h(title)}</h1><div class="row">${cloudPill()}<button class="icon-btn" data-act="search" aria-label="Search bookings"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg></button><button class="icon-btn" data-act="theme" aria-label="Switch to ${isDark() ? 'light' : 'dark'} theme">${isDark()
     ? '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>'
     : '<svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></svg>'}</button></div></header>`;
 }
@@ -607,6 +754,7 @@ function axis(y, min, max, unit = '') {
   const ticks = [min, 0, max].filter((v, i, a) => a.indexOf(v) === i && v >= min && v <= max);
   return ticks.map((v) => `<line x1="${PAD}" x2="${W}" y1="${y(v)}" y2="${y(v)}" class="${v === 0 ? 'zero' : 'grid'}"/><text x="${PAD - 4}" y="${y(v) + 3}" class="tick" text-anchor="end">${v === 0 ? '0' : (Math.abs(v) >= 1000 ? `${Math.round(v / 1000)}k` : Math.round(v))}${v ? unit : ''}</text>`).join('');
 }
+const pjumpMode = () => (state.period.mode === 'all' ? 'month' : state.period.mode);
 function series() {
   const mode = state.period.mode === 'all' ? 'month' : state.period.mode;
   return periodList(mode).map((k) => ({ key: k, label: periodLabel(k, mode, true), sel: state.period.mode === 'all' || k === state.period.key, ...sumMonths(monthsIn(k, mode)) }));
@@ -621,7 +769,8 @@ function chartFlows() {
     const x = PAD + i * bw; const sel = s.sel ? ' sel' : '';
     return `<rect x="${x + bw * 0.12}" width="${bw * 0.3}" y="${y(s.earned)}" height="${y(0) - y(s.earned)}" rx="3" class="b-in${sel}"/>
       <rect x="${x + bw * 0.44}" width="${bw * 0.3}" y="${y(out[i])}" height="${y(0) - y(out[i])}" rx="3" class="b-out${sel}"/>
-      <text x="${px(i)}" y="${H + 26}" class="tick" text-anchor="middle">${h(s.label)}</text>`;
+      <text x="${px(i)}" y="${H + 26}" class="tick" text-anchor="middle">${h(s.label)}</text>
+      <rect class="hit" data-pjump="${pjumpMode()}|${s.key}" x="${x}" y="0" width="${bw}" height="${H + 32}"><title>Show ${h(s.label)}</title></rect>`;
   }).join('');
   return `<svg viewBox="0 0 ${W} ${H + 32}" class="chart" role="img" aria-label="Earned, spent and saved per period">${axis(y, Math.round(min), Math.round(max))}${bars}<polyline points="${S.map((s, i) => `${px(i)},${y(s.saved)}`).join(' ')}" class="l-sav"/>${S.map((s, i) => `<circle cx="${px(i)}" cy="${y(s.saved)}" r="3.5" class="d-sav"/>`).join('')}</svg>
   <p class="legend"><span><i class="k-in"></i>Earned</span><span><i class="k-out"></i>Spent and sent to India</span><span><i class="k-sav"></i>Saved</span></p>`;
@@ -633,7 +782,7 @@ function chartRate() {
   const y = scale(min, max, H); const bw = (W - PAD) / S.length;
   const px = (i) => PAD + i * bw + bw / 2;
   const area = `${px(0)},${y(0)} ${v.map((r, i) => `${px(i)},${y(r)}`).join(' ')} ${px(v.length - 1)},${y(0)}`;
-  return `<svg viewBox="0 0 ${W} ${H + 32}" class="chart" role="img" aria-label="Savings rate per period">${axis(y, Math.round(min), Math.round(max), '%')}<polygon points="${area}" class="a-rate"/><polyline points="${v.map((r, i) => `${px(i)},${y(r)}`).join(' ')}" class="l-rate"/>${v.map((r, i) => `<circle cx="${px(i)}" cy="${y(r)}" r="3.5" class="d-rate"/><text x="${px(i)}" y="${y(r) - 8}" class="val" text-anchor="middle">${Math.round(r)}%</text><text x="${px(i)}" y="${H + 26}" class="tick" text-anchor="middle">${h(S[i].label)}</text>`).join('')}</svg>
+  return `<svg viewBox="0 0 ${W} ${H + 32}" class="chart" role="img" aria-label="Savings rate per period">${axis(y, Math.round(min), Math.round(max), '%')}<polygon points="${area}" class="a-rate"/><polyline points="${v.map((r, i) => `${px(i)},${y(r)}`).join(' ')}" class="l-rate"/>${v.map((r, i) => `<rect class="hit" data-pjump="${pjumpMode()}|${S[i].key}" x="${PAD + i * bw}" y="0" width="${bw}" height="${H + 32}"><title>Show ${h(S[i].label)}</title></rect><circle cx="${px(i)}" cy="${y(r)}" r="3.5" class="d-rate"/><text x="${px(i)}" y="${y(r) - 8}" class="val" text-anchor="middle">${Math.round(r)}%</text><text x="${px(i)}" y="${H + 26}" class="tick" text-anchor="middle">${h(S[i].label)}</text>`).join('')}</svg>
   <p class="fine">Saved as a share of earned income.</p>`;
 }
 const GROUP_COLORS = ['var(--indigo)', 'var(--sky)', 'var(--lagoon)', 'var(--saffron)', 'var(--rose)', '#8E7CF0', '#2BA6B8', 'var(--slate)', '#C77D4A', '#5FB36B'];
@@ -696,10 +845,9 @@ function searchView() {
 }
 function searchResults() {
   const terms = state.q.toLowerCase().split(/\s+/).filter(Boolean);
-  const all = [...state.agg.rows].sort((x, y) => y.date.localeCompare(x.date));
-  const hit = terms.length ? all.filter((t) => { const hay = `${t.vendor} ${t.text} ${n2(Math.abs(t.amount))} ${Math.abs(t.amount)} ${deDate(t.date)} ${lineLabel(t.line)} ${(state.settings.notes || {})[t.id] || ''}`.toLowerCase(); return terms.every((w) => hay.includes(w)); }) : all;
+  const hit = searchHits();
   const shown = hit.slice(0, 80);
-  return `<p class="fine pad">${terms.length ? `${hit.length} match${hit.length === 1 ? '' : 'es'}` : `All ${hit.length} bookings, newest first`}${hit.length > 80 ? ' · showing 80' : ''}</p>
+  return `${bulkBar(terms.length ? hit.length : 0)}<p class="fine pad">${terms.length ? `${hit.length} match${hit.length === 1 ? '' : 'es'}` : `All ${hit.length} bookings, newest first`}${hit.length > 80 ? ' · showing 80' : ''}</p>
   <ul class="results">${shown.map((t) => `<li><button data-tx="${h(t.id)}"><span><b>${h(t.vendor)}</b><small>${deDate(t.date)} · ${h(lineLabel(t.line))}${(state.settings.notes || {})[t.id] ? ` · ${h(state.settings.notes[t.id])}` : ''}</small></span><strong class="${t.amount > 0 ? 'pos' : ''}">${eur(t.amount)}</strong></button></li>`).join('')}</ul>`;
 }
 
@@ -791,7 +939,7 @@ function dataView() {
   const nAns = live(s.vendorRules).length + live(s.txRules).length;
   const own = (s.profile?.lines || []).filter((l) => l.id.startsWith('c.')).length;
   const theme = currentTheme();
-  return `${topbar('Data')}<div class="data-grid">${cloudCard()}<section class="card">
+  return `${topbar('Data')}<div class="data-grid">${cloudCard()}${cloudReady() && cloud.meta && cloud.meta.fileId ? lockCard() : ''}<section class="card">
     <h2>Add statements</h2>
     <p class="fine">PDF Kontoauszug or CSV export. Overlapping files are fine: bookings already stored are skipped.</p>
     <label class="btn primary">Choose files<input type="file" accept=".pdf,.csv,.json,application/pdf,text/csv,application/json" multiple data-act="import" hidden></label>
@@ -838,14 +986,19 @@ function dataView() {
   <p class="fine pad">Finances ${APP_VERSION}. ${state.tx.length} bookings stored on this device. Works offline; nothing is sent anywhere.</p>`;
 }
 
-function manageSheet() {
+function manageSheet() { sheet(manageHtml(), manageHtml); }
+function manageHtml() {
   const s = state.settings;
   const v = live(s.vendorRules);
   const b = live(s.txRules);
   const own = (s.profile?.lines || []).filter((l) => l.id.startsWith('c.'));
   const nDis = live(s.flagDismissed).length;
   const usage = (id) => state.agg.rows.filter((t) => t.line === id).length;
-  sheet(`<h2>Your answers and lines</h2>
+  const ur = userRules();
+  return `<h2>Your answers and lines</h2>
+  <h3>Keyword rules (${ur.length})</h3>
+  ${ur.length ? `<ul class="manage">${ur.map((r) => `<li><span><b>"${h(r.label)}"${r.sign ? ` <small>${r.sign === '+' ? 'money in' : 'money out'}</small>` : ''}</b><small>→ ${h(lineLabel(r.line))} · ${ruleMatches(r.label, r.sign).length} bookings</small></span><button class="link" data-delrule="${h(r.label)}">Remove</button></li>`).join('')}</ul>` : '<p class="fine">None yet. A keyword rule catches every booking whose text contains certain words, even when the shop name varies.</p>'}
+  <button class="btn" data-act="newrule">New keyword rule</button>
   <h3>Vendor answers (${v.length})</h3>
   ${v.length ? `<ul class="manage">${v.map(([k, id]) => `<li><span><b>${h(k)}</b><small>→ ${h(lineLabel(id))}</small></span><button class="link" data-delvendor="${h(k)}">Remove</button></li>`).join('')}</ul>` : '<p class="fine">None yet.</p>'}
   <h3>Single-booking answers (${b.length})</h3>
@@ -854,7 +1007,7 @@ function manageSheet() {
   ${own.length ? `<ul class="manage">${own.map((l) => `<li><span><b>${h(l.label)}</b><small>${h(SECTIONS[l.sec])}${l.group ? ` · ${h(l.group)}` : ''} · ${usage(l.id)} booking${usage(l.id) === 1 ? '' : 's'}</small></span><span class="row"><button class="link" data-renline="${h(l.id)}">Rename</button><button class="link danger" data-delline="${h(l.id)}">Remove</button></span></li>`).join('')}</ul>` : '<p class="fine">None yet.</p>'}
   ${nDis ? `<h3>Confirmed as regular spend (${nDis})</h3><button class="link" data-act="resetflags">Show these as possible one-time items again</button>` : ''}
   <p class="fine">Removing an answer sends its bookings back to the rules (or to Review if no rule matches). Every change can be undone.</p>
-  <button class="btn" data-act="close">Done</button>`);
+  <button class="btn" data-act="close">Done</button>`;
 }
 
 function showImportReport(r) {
@@ -869,7 +1022,7 @@ function showImportReport(r) {
 
 // ---------------- events ----------------
 document.addEventListener('click', async (e) => {
-  const b = e.target.closest('button, [data-section], [data-cell], [data-drill]');
+  const b = e.target.closest('button, [data-section], [data-cell], [data-drill], [data-pjump]');
   if (!b) return;
   const ds = b.dataset;
   if (ds.tab) { closeSheet(); state.tab = ds.tab; render(); window.scrollTo(0, 0); return; }
@@ -878,68 +1031,85 @@ document.addEventListener('click', async (e) => {
   if (ds.themeset) { applyTheme(ds.themeset); render(); return; }
   if (ds.section) { state.section = ds.section; render(); return; }
   if (ds.cell) {
-    const c = state.agg.cell[ds.cell]; const i = ds.cell.lastIndexOf('|'); const id = ds.cell.slice(0, i), m = ds.cell.slice(i + 1);
-    sheet(`<h2>${h(lineLabel(id))}</h2><p class="fine">${monthLabel(m)} · ${c.txs.length} booking${c.txs.length > 1 ? 's' : ''} · ${eur(c.amt)}</p>${txList(c.txs)}<button class="btn" data-act="close">Done</button>`);
+    const key = ds.cell; const i = key.lastIndexOf('|'); const id = key.slice(0, i), m = key.slice(i + 1);
+    const html = () => { const c = state.agg.cell[key]; return `<h2>${h(lineLabel(id))}</h2><p class="fine">${monthLabel(m)} · ${c ? `${c.txs.length} booking${c.txs.length > 1 ? 's' : ''} · ${eur(c.amt)}` : 'no bookings left on this line'}</p>${c ? txList(c.txs) : ''}<button class="btn" data-act="close">Done</button>`; };
+    sheet(html(), html);
     return;
   }
+  if (ds.dlg) { if (dialogDone) { const inp = $('#dlg-in'); dialogDone(ds.dlg === 'ok' ? (inp ? inp.value : true) : null); } return; }
+  if (ds.pjump) { const i = ds.pjump.indexOf('|'); state.period = { mode: ds.pjump.slice(0, i), key: ds.pjump.slice(i + 1) }; render(); return; }
+  if (ds.delrule) { const kw = ds.delrule; await change(`Rule "${kw}" removed`, (s) => { s.profile.rules = s.profile.rules.filter((r) => !(r.mine && r.label === kw)); }); return; }
   if (ds.drill) {
-    const [g, key] = ds.drill.split('|'); const mode = state.period.mode === 'all' ? 'month' : state.period.mode; const ms = monthsIn(key, mode);
-    drillSheet(`${g}, ${periodLabel(key, mode)}`, state.agg.rows.filter((t) => t.line && ms.includes(monthOf(t.date)) && lineMeta(t.line).sec === 'variable' && (lineMeta(t.line).group || 'Other') === g));
+    const i = ds.drill.lastIndexOf('|'); const g = ds.drill.slice(0, i), key = ds.drill.slice(i + 1); const mode = state.period.mode === 'all' ? 'month' : state.period.mode; const ms = monthsIn(key, mode);
+    drillSheet(`${g}, ${periodLabel(key, mode)}`, state.agg.rows.filter((t) => t.line && ms.includes(monthOf(t.date)) && lineMeta(t.line).sec === 'variable' && (lineMeta(t.line).group || 'Other') === g).map((t) => t.id));
     return;
   }
   if (ds.vendor) {
     const ms = monthsIn(state.period.key, state.period.mode);
-    drillSheet(`${ds.vendor}, ${periodLabel(state.period.key, state.period.mode)}`, state.agg.rows.filter((t) => t.vendor === ds.vendor && ms.includes(monthOf(t.date)) && t.line && lineMeta(t.line).sec === 'variable'));
+    drillSheet(`${ds.vendor}, ${periodLabel(state.period.key, state.period.mode)}`, state.agg.rows.filter((t) => t.vendor === ds.vendor && ms.includes(monthOf(t.date)) && t.line && lineMeta(t.line).sec === 'variable').map((t) => t.id));
     return;
   }
-  if (ds.tx) { const t = txById(ds.tx); sheet(`<h2>${h(t.vendor)}</h2>${txList([t])}<button class="btn" data-act="close">Done</button>`); return; }
+  if (ds.tx) { const id = ds.tx; const html = () => { const t = txById(id); return `<h2>${h(t.vendor)}</h2>${txList([t])}<button class="btn" data-act="close">Done</button>`; }; sheet(html(), html); return; }
   if (ds.onetime) { oneTimeSheet(ds.onetime); return; }
   if (ds.passyes) { const id = ds.passyes; await change('Marked as forwarded to India', (s) => { s.txRules[id] = 'pt.in'; }); return; }
   if (ds.dismiss) { const id = ds.dismiss; await change('Kept as regular spend', (s) => { (s.flagDismissed ||= {})[id] = true; }); return; }
   if (ds.deltrip) { const i = +ds.deltrip; await change('Trip removed', (s) => { s.trips.splice(i, 1); }); return; }
-  if (ds.delvendor) { const k = ds.delvendor; await change('Vendor answer removed', (s) => { delete s.vendorRules[k]; }); manageSheet(); return; }
-  if (ds.deltx) { const k = ds.deltx; await change('Booking answer removed', (s) => { delete s.txRules[k]; }); manageSheet(); return; }
+  if (ds.delvendor) { const k = ds.delvendor; await change('Vendor answer removed', (s) => { delete s.vendorRules[k]; }); return; }
+  if (ds.deltx) { const k = ds.deltx; await change('Booking answer removed', (s) => { delete s.txRules[k]; }); return; }
   if (ds.renline) {
     const l = state.settings.profile.lines.find((x) => x.id === ds.renline);
-    const name = prompt('New name for this line', l.label); if (!name || !name.trim()) return;
-    await change('Line renamed', (s) => { s.profile.lines.find((x) => x.id === l.id).label = name.trim(); }); manageSheet(); return;
+    const name = await ask({ title: 'Rename line', input: l.label, ok: 'Rename' }); if (!name || !name.trim()) return;
+    await change('Line renamed', (s) => { s.profile.lines.find((x) => x.id === l.id).label = name.trim(); }); return;
   }
   if (ds.delline) {
     const id = ds.delline; const n = state.agg.rows.filter((t) => t.line === id).length;
-    if (n && !confirm(`${n} booking${n > 1 ? 's use' : ' uses'} this line. They will go back to the rules or to Review. Remove it?`)) return;
+    if (n && !(await ask({ title: 'Remove this line?', text: `${n} booking${n > 1 ? 's use' : ' uses'} it. They will go back to the rules or to Review.`, ok: 'Remove', danger: true }))) return;
     await change('Line removed', (s) => {
       s.profile.lines = s.profile.lines.filter((x) => x.id !== id);
       for (const k of Object.keys(s.vendorRules)) if (s.vendorRules[k] === id) delete s.vendorRules[k];
       for (const k of Object.keys(s.txRules)) if (s.txRules[k] === id) delete s.txRules[k];
     });
-    manageSheet(); return;
+    return;
   }
   const act = ds.act;
   if (act === 'backup') await exportBackup();
   else if (act === 'excel') await exportExcel();
   else if (act === 'exportrules') await exportRules();
   else if (act === 'manage') manageSheet();
+  else if (act === 'newrule') sheet(ruleSheetHtml());
+  else if (act === 'search') { closeSheet(); state.tab = 'months'; state.section = 'search'; render(); window.scrollTo(0, 0); const q = $('#q'); if (q) q.focus(); }
+  else if (act === 'unlockapp') await unlockApp();
+  else if (act === 'lockfallback') await lockFallback();
+  else if (act === 'lockoff') { if (await ask({ title: 'Turn off app lock?', text: 'The data on this device will no longer be encrypted with Face ID; your phone\'s own lock still protects it.', ok: 'Turn off', danger: true })) { await disableLock(); render(); toast('App lock is off'); } }
   else if (act === 'editbudgets') budgetSheet();
   else if (act === 'editgoal') goalSheet();
   else if (act === 'cleargoal') { closeSheet(); await change('Savings goal removed', (s) => { s.goal = null; }); }
 
-  else if (act === 'gsignin') C.signIn(cfg.googleClientId, 'sync');
+  else if (act === 'gsignin') {
+    if (C.isStandalone()) { C.signIn(cfg.googleClientId, 'sync'); return; }
+    try {
+      cloud.token = await C.signInWindow(cfg.googleClientId); await kvSet('gtoken', cloud.token);
+      refreshStatus(); if (!cloud.meta || !cloud.meta.fileId) await chooseVault(); else await syncNow();
+      render();
+    } catch (err) { if (err.code === 'popup_failed_to_open') C.signIn(cfg.googleClientId, 'sync'); else toast(err.message); }
+  }
   else if (act === 'syncnow') await syncNow();
   else if (act === 'pickvault') await cloudAction('Opening Google Drive…', async () => { const id = await C.pickVault(cloud.token.token, cfg.googleApiKey, cfg.googleAppId); if (id) { cloud.meta = { fileId: id, owner: false }; await saveCloudMeta(); } });
   else if (act === 'lockvault') { cloud.key = null; await kvSet('cloudKey', null); refreshStatus(); render(); toast('Vault locked on this device'); }
   else if (act === 'forgetvault' || act === 'disconnect') {
-    if (act === 'disconnect' && !confirm('Stop syncing this device? Data stays here and in Google Drive.')) return;
+    if (act === 'disconnect' && !(await ask({ title: 'Stop syncing this device?', text: 'Your data stays on this device and in Google Drive.', ok: 'Stop syncing', danger: true }))) return;
     cloud.meta = null; cloud.key = null; cloud.dirty = false; await kvSet('cloud', null); await kvSet('cloudKey', null); refreshStatus(); render();
   }
   else if (act === 'theme') { applyTheme(isDark() ? 'light' : 'dark'); render(); }
   else if (act === 'newline') newLineSheet(null);
   else if (act === 'undo') { $('#toast').hidden = true; await undo(); }
-  else if (act === 'resetflags') { await change('One-time checks reset', (s) => { s.flagDismissed = {}; }); manageSheet(); }
+  else if (act === 'resetflags') { await change('One-time checks reset', (s) => { s.flagDismissed = {}; }); }
   else if (act === 'close') closeSheet();
   else if (act === 'goreview') { closeSheet(); state.tab = 'review'; render(); }
   else if (act === 'wipe') {
-    if (!confirm('Erase all bookings, statements, rules and answers on this phone?')) return;
+    if (!(await ask({ title: 'Erase everything on this device?', text: 'All bookings, statements, rules and answers on this device are removed. Your vault in Google Drive is not touched.', ok: 'Erase', danger: true }))) return;
     await clear('tx'); await clear('statements'); await clear('kv');
+    lock.on = false; lock.key = null; lock.meta = null; lock.vaultRaw = null;
     state.tx = []; state.statements = []; state.settings = fresh(); state.lastBackup = null; state.undo = []; cloud.meta = null; cloud.key = null; cloud.token = null; refreshStatus(); recompute(); render();
   }
 });
@@ -961,13 +1131,16 @@ document.addEventListener('change', async (e) => {
   if (t.name === 'sec') { const f = t.form; f.querySelectorAll('.grp').forEach((g) => { g.hidden = t.value !== 'variable'; }); }
 });
 document.addEventListener('input', (e) => {
+  const rf = e.target.form && e.target.form.dataset.act === 'saverule' ? e.target.form : null;
+  if (rf) { const kw = rf.kw.value.trim(); const hits = kw.length >= 2 ? ruleMatches(kw, rf.sign.value) : []; $('#rule-preview').textContent = kw.length >= 2 ? `Matches ${hits.length} booking${hits.length === 1 ? '' : 's'} so far${hits.length ? `: ${[...new Set(hits.map((t) => t.vendor))].slice(0, 4).join(', ')}` : ''}.` : 'Type at least 2 characters to see which bookings match.'; }
   if (e.target.id === 'q') { state.q = e.target.value; $('#results').innerHTML = searchResults(); }
+  if (e.target.form && e.target.form.dataset.act === 'saverule' && e.target.name === 'sign') e.target.form.kw.dispatchEvent(new Event('input', { bubbles: true }));
 });
 document.addEventListener('submit', async (e) => {
   e.preventDefault();
   const f = e.target; const fd = new FormData(f);
   if (f.dataset.act === 'addtrip') {
-    if (fd.get('to') < fd.get('from')) { alert('The trip ends before it starts.'); return; }
+    if (fd.get('to') < fd.get('from')) { toast('The trip ends before it starts.'); return; }
     const trip = { name: fd.get('name').trim(), from: fd.get('from'), to: fd.get('to'), scope: fd.get('all') ? 'all' : 'dining' };
     await change(`Trip "${trip.name}" added`, (s) => { s.trips.push(trip); });
   } else if (f.dataset.act === 'start') {
@@ -985,7 +1158,7 @@ document.addEventListener('submit', async (e) => {
     });
   } else if (f.dataset.act === 'onetime') {
     const txId = f.dataset.tx; const label = (fd.get('label') || '').trim(); const existing = fd.get('existing');
-    if (!label && !existing) { alert('Name the item or pick an existing one-time line.'); return; }
+    if (!label && !existing) { toast('Name the item or pick an existing one-time line.'); return; }
     closeSheet();
     await change(`Moved to one-time: ${label || lineLabel(existing)}`, (s) => {
       s.txRules[txId] = existing || createLine(s, { label, sec: 'onetime', group: '' });
@@ -997,8 +1170,22 @@ document.addEventListener('submit', async (e) => {
   } else if (f.dataset.act === 'goal') {
     const goal = { year: +fd.get('year'), amount: +fd.get('amount') };
     closeSheet(); await change('Savings goal saved', (s) => { s.goal = goal; });
+  } else if (f.dataset.act === 'saverule') {
+    const kw = fd.get('kw').trim(); const line = fd.get('line'); const sign = fd.get('sign') || '';
+    if (kw.length < 2 || !line) return;
+    await change(`Rule "${kw}" saved`, (s) => addUserRule(s, kw, line, sign)); manageSheet();
+  } else if (f.dataset.act === 'bulk') {
+    const line = fd.get('line'); if (!line) return; const ids = searchHits().map((t) => t.id); const kw = state.q.trim();
+    const n = ids.length;
+    await change(`${n} booking${n === 1 ? '' : 's'} moved to ${lineLabel(line)}${fd.get('future') ? ', with a rule for future ones' : ''}`, (s) => {
+      for (const id of ids) s.txRules[id] = line;
+      if (fd.get('future')) addUserRule(s, kw, line, '');
+    });
+  } else if (f.dataset.act === 'lockon') {
+    showBusy('Setting up Face ID…');
+    try { await enableLock(fd.get('p')); toast('App lock is on'); } catch (err) { toast(err.message); } finally { hideBusy(); render(); }
   } else if (f.dataset.act === 'createvault') {
-    if (fd.get('p1') !== fd.get('p2')) { alert('The two passphrases are different.'); return; }
+    if (fd.get('p1') !== fd.get('p2')) { toast('The two passphrases are different.'); return; }
     await cloudAction('Creating your encrypted vault…', () => createVaultFlow(fd.get('p1'), !!fd.get('remember')));
   } else if (f.dataset.act === 'unlock') {
     await cloudAction('Unlocking…', () => unlockFlow(fd.get('p'), !!fd.get('remember')));
@@ -1011,17 +1198,28 @@ async function cloudAction(msg, fn) {
   finally { hideBusy(); render(); }
 }
 $('#sheet').addEventListener('click', (e) => { if (e.target.id === 'sheet') closeSheet(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (dialogDone) dialogDone(null); else if (!$('#sheet').hidden) closeSheet();
+});
 
 // ---------------- boot ----------------
 (async () => {
   if (navigator.storage && navigator.storage.persist) { try { await navigator.storage.persist(); } catch { /* not granted */ } }
+  applyTheme(currentTheme());
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (currentTheme() === 'auto') applyTheme('auto'); });
   await load(); await loadCloud();
   const red = C.readRedirect();
   if (red && red.token) { cloud.token = { token: red.token, exp: red.exp }; await kvSet('gtoken', cloud.token); refreshStatus(); if (!cloud.meta || !cloud.meta.fileId) { state.tab = 'data'; try { await chooseVault(); } catch (e) { toast(e.message); } } }
   else if (red && red.error) { state.tab = 'data'; toast(red.error); }
   refreshStatus(); render();
-  if (cloud.status === 'synced') syncNow(true);
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && cloud.status === 'synced') syncNow(true); });
-  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js');
+  if (cloud.status === 'synced' && !(lock.on && !lock.key)) syncNow(true);
+  let hiddenAt = 0;
+  document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); if (lock.on && lock.key) await sealAll(); return; }
+    if (lock.on && lock.key && hiddenAt && Date.now() - hiddenAt > 5 * 60 * 1000) { location.reload(); return; }
+    if (cloud.status === 'synced' && !(lock.on && !lock.key)) syncNow(true);
+  });
+  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => { /* offline copy not available here */ });
   window.__app = { state, cloud, importFiles, exportExcel, buildWorkbook, reconcile, refresh: () => { recompute(); render(); } }; // used by automated checks
 })();

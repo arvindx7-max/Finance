@@ -17,10 +17,10 @@ function unb64(str) { const s = atob(str); const out = new Uint8Array(s.length);
 
 // ---------- encryption ----------
 export const newSalt = () => b64(crypto.getRandomValues(new Uint8Array(16)));
-export async function deriveKey(passphrase, salt, iter = ITER) {
+export async function deriveKey(passphrase, salt, iter = ITER, extractable = false) {
   const base = await crypto.subtle.importKey('raw', enc.encode(passphrase), 'PBKDF2', false, ['deriveKey']);
   return crypto.subtle.deriveKey({ name: 'PBKDF2', salt: unb64(salt), iterations: iter, hash: 'SHA-256' }, base,
-    { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']); // non-extractable: can be kept on a device without exposing it
+    { name: 'AES-GCM', length: 256 }, extractable, ['encrypt', 'decrypt']); // non-extractable unless app lock needs to seal it
 }
 export async function seal(obj, key, salt, iter = ITER) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -58,6 +58,21 @@ export function readRedirect() {
   if (h.get('error')) return { error: h.get('error') === 'access_denied' ? 'Google sign-in was cancelled.' : `Google sign-in failed (${h.get('error')}).` };
   if (!expected || h.get('state') !== expected) return { error: 'Google sign-in could not be verified. Try again.' };
   return { token: h.get('access_token'), exp: Date.now() + (Number(h.get('expires_in') || 3600) - 60) * 1000, next };
+}
+
+// ---------- Google sign-in in a window (laptop, Safari tab): no page reload ----------
+// Home Screen apps on iPhone handle pop-up windows poorly, so they keep the redirect above.
+export const isStandalone = () => !!(navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches));
+export async function signInWindow(clientId) {
+  await loadScript('https://accounts.google.com/gsi/client');
+  return new Promise((res, rej) => {
+    const tc = window.google.accounts.oauth2.initTokenClient({
+      client_id: clientId, scope: SCOPE,
+      callback: (r) => (r && r.access_token ? res({ token: r.access_token, exp: Date.now() + (Number(r.expires_in || 3600) - 60) * 1000 }) : rej(Object.assign(new Error(r && r.error_description ? r.error_description : 'Google sign-in failed.'), { code: 'failed' }))),
+      error_callback: (e) => rej(Object.assign(new Error(e && e.type === 'popup_closed' ? 'Google sign-in was closed.' : 'The Google sign-in window could not open.'), { code: e && e.type })),
+    });
+    tc.requestAccessToken({ prompt: '' });
+  });
 }
 
 // ---------- Drive ----------

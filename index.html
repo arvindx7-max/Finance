@@ -257,6 +257,24 @@ rect.drill { cursor: pointer; } rect.drill:hover { opacity: .8; }
 .txs label.note input { flex: 1; min-width: 0; font: inherit; font-size: 14px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 9px; background: var(--raised); color: var(--ink); }
 .stack label small { color: var(--muted); font-weight: 400; }
 
+/* ---------- v14: lock screen, dialogs, bulk assign, chart taps ---------- */
+body.locked .tabbar { display: none; }
+body.locked { padding-left: 0; }
+.lockscreen { min-height: 80vh; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 10px; padding: 24px; }
+.lockscreen img { border-radius: 22px; border: 1px solid var(--line); }
+.lockscreen h1 { font-family: var(--num); font-size: 26px; font-weight: 800; }
+.lockscreen .btn { min-width: 200px; }
+#dialog { position: fixed; inset: 0; background: color-mix(in srgb, #050A16 50%, transparent); z-index: 40; display: grid; place-items: center; padding: 20px; }
+.dialog-card { width: 100%; max-width: 400px; background: var(--surface); border-radius: 20px; padding: 20px; box-shadow: 0 10px 40px rgba(5,10,22,.3); }
+.dialog-card h2 { font-family: var(--num); font-size: 19px; }
+.dialog-card p { color: var(--muted); font-size: 14px; margin: 8px 0 14px; }
+.dialog-card input { width: 100%; font: inherit; font-size: 16px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); color: var(--ink); margin: 6px 0 12px; }
+.bulk { margin: 0 12px 10px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 14px; }
+.bulk select { flex: 1; min-width: 160px; }
+.bulk .check { width: 100%; font-size: 13px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+rect.hit { fill: transparent; cursor: pointer; }
+rect.hit:hover { fill: color-mix(in srgb, var(--ink) 5%, transparent); }
+
 /* ---------- navigation ---------- */
 .tabbar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-around; background: color-mix(in srgb, var(--surface) 86%, transparent); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); border-top: 1px solid var(--line); padding: 6px 4px calc(6px + env(safe-area-inset-bottom)); z-index: 5; }
 .tabbar .brand { display: none; }
@@ -311,7 +329,8 @@ rect.drill { cursor: pointer; } rect.drill:hover { opacity: .8; }
   <button data-tab="data"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M4 21h16"/></svg>Data</button>
 </nav>
 <main id="main" class="app"></main>
-<div id="sheet" hidden><div id="sheet-body"></div></div>
+<div id="sheet" hidden><div id="sheet-body" role="dialog" aria-modal="true" aria-label="Details"></div></div>
+<div id="dialog" hidden></div>
 <div id="toast" role="status" hidden></div>
 <script src="config.js"></script>
 <script type="module" src="app.js"></script>
