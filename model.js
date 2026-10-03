@@ -122,6 +122,7 @@ export const emptyProfile = () => ({ app: 'finance-insights-rules', version: 1, 
 
 // ---- effective line catalog = base lines + rules-file lines ----
 let LINES = BASE_LINES;
+let LINE_MAP = new Map(BASE_LINES.map((l) => [l.id, l]));
 let PROFILE_RULES = { first: [], normal: [] };
 let NOTES = {};
 let SHEETS = {};
@@ -160,6 +161,7 @@ export function applyProfile(profile) {
     out.splice(idx + 1, 0, line);
   }
   LINES = out;
+  LINE_MAP = new Map(out.map((l) => [l.id, l]));
   const rules = (p.rules || []).filter((r) => r.line).map((r) => ({ r, c: compileRule(r) }));
   PROFILE_RULES = { first: rules.filter((x) => x.r.first).map((x) => x.c), normal: rules.filter((x) => !x.r.first).map((x) => x.c) };
   NOTES = p.notes || {};
@@ -183,7 +185,7 @@ export function lineMeta(id) {
     const t = TRIPS.find((x) => x.name === id.slice(5));
     return { id, sec: 'variable', label: lineLabel(id), group: t && t.scope === 'all' ? 'Trips' : 'Restaurants & dining' };
   }
-  return LINES.find((l) => l.id === id) || null;
+  return LINE_MAP.get(id) || null;
 }
 
 // Order: single-booking answer > rules-file "first" rules (one-time items, offsets) > your vendor answers
@@ -247,7 +249,14 @@ export function aggregate(txs, settings) {
     if (l.id === 'v.restaurants') tripIds.filter((id) => lineMeta(id).group !== 'Trips').forEach((id) => order.push(lineMeta(id)));
     if (i === lastVar) tripIds.filter((id) => lineMeta(id).group === 'Trips').forEach((id) => order.push(lineMeta(id)));
   });
-  const bySec = (sec, m) => r2(rows.filter((t) => t.line && lineMeta(t.line).sec === sec && (!m || monthOf(t.date) === m)).reduce((s, t) => s + t.amount, 0));
+  // One pass over the bookings: sums per section and month, plus each month's balance change.
+  const acc = new Map(); const add = (k, v) => acc.set(k, (acc.get(k) || 0) + v);
+  for (const t of rows) {
+    const m = monthOf(t.date); add(`kept|${m}`, t.amount);
+    if (!t.line) { add(`none|${m}`, t.amount); continue; }
+    add(`${lineMeta(t.line).sec}|${m}`, t.amount);
+  }
+  const bySec = (sec, m) => r2(acc.get(`${sec}|${m}`) || 0);
   const summary = months.map((m) => {
     const earned = bySec('income', m);
     const fixed = -bySec('fixed', m), variable = -bySec('variable', m), onetime = -bySec('onetime', m);
@@ -257,9 +266,8 @@ export function aggregate(txs, settings) {
     const saved = r2(earned - spent - india);
     const toSav = -bySec('tosav', m), fromSav = bySec('fromsav', m);
     const netToSav = r2(toSav - fromSav);
-    const inMonth = rows.filter((t) => monthOf(t.date) === m);
-    const kept = r2(inMonth.reduce((s, t) => s + t.amount, 0)); // actual balance change, by booking month
-    const unassigned = r2(inMonth.filter((t) => !t.line).reduce((s, t) => s + t.amount, 0));
+    const kept = r2(acc.get(`kept|${m}`) || 0); // actual balance change, by booking month
+    const unassigned = r2(acc.get(`none|${m}`) || 0);
     return { month: m, earned, fixed, variable, onetime, spent, indiaGross, passThrough, india, saved,
       toSav, fromSav, netToSav, kept, unassigned, savingsRate: earned ? saved / earned : 0 };
   });

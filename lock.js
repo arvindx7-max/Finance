@@ -28,28 +28,57 @@ async function prfFor(credId, prfSalt) {
   return out;
 }
 
-// Creates the passkey, proves the PRF key works, returns { meta, key }.
+// After a passkey window closes (notably on the Mac), Safari needs a moment to give focus back to the page;
+// a passkey request from an unfocused page fails with "The document is not focused".
+function waitForFocus(ms = 4000) {
+  if (document.hasFocus()) return Promise.resolve();
+  return new Promise((res) => { const done = () => { window.removeEventListener('focus', done); res(); }; window.addEventListener('focus', done); setTimeout(done, ms); });
+}
+const notFocused = (e) => e && (e.name === 'NotAllowedError' || e.name === 'InvalidStateError') && /focus/i.test(e.message || '');
+async function prfWhenFocused(credId, prfSalt) {
+  await waitForFocus();
+  try { return await prfFor(credId, prfSalt); }
+  catch (e) { if (!notFocused(e)) throw e; await new Promise((r) => setTimeout(r, 400)); await waitForFocus(); return prfFor(credId, prfSalt); }
+}
+
+// Creates the passkey (or reuses one from an unfinished attempt), proves the PRF key works, returns { meta, key }.
+// The key is asked for while the passkey is created, so normally only one Touch ID / Face ID prompt is needed.
+const PENDING = 'finances-lock-pending';
 export async function setup() {
-  const prfSalt = b64(crypto.getRandomValues(new Uint8Array(32)));
-  const hkdfSalt = b64(crypto.getRandomValues(new Uint8Array(16)));
-  let cred;
-  try {
-    cred = await navigator.credentials.create({ publicKey: {
-      rp: { name: 'Finances' },
-      user: { id: crypto.getRandomValues(new Uint8Array(16)), name: 'Finances app lock', displayName: 'Finances app lock' },
-      challenge: crypto.getRandomValues(new Uint8Array(32)),
-      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
-      authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'preferred' },
-      timeout: 60000, extensions: { prf: {} },
-    } });
-  } catch (e) { throw new Error(e.name === 'NotAllowedError' ? 'Face ID setup was cancelled.' : `Face ID setup failed (${e.name}).`); }
-  const credId = b64(cred.rawId);
-  const prf = await prfFor(credId, prfSalt);
+  let pending = null; try { pending = JSON.parse(sessionStorage.getItem(PENDING) || 'null'); } catch { /* none */ }
+  const prfSalt = pending ? pending.prfSalt : b64(crypto.getRandomValues(new Uint8Array(32)));
+  const hkdfSalt = pending ? pending.hkdfSalt : b64(crypto.getRandomValues(new Uint8Array(16)));
+  let credId = pending ? pending.credId : null; let prf = null;
+  if (!credId) {
+    let cred;
+    try {
+      cred = await navigator.credentials.create({ publicKey: {
+        rp: { name: 'Finances' },
+        user: { id: crypto.getRandomValues(new Uint8Array(16)), name: 'Finances app lock', displayName: 'Finances app lock' },
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+        authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'preferred' },
+        timeout: 60000, extensions: { prf: { eval: { first: unb64(prfSalt) } } },
+      } });
+    } catch (e) { throw new Error(e.name === 'NotAllowedError' && !notFocused(e) ? 'Setup was cancelled.' : `Setup failed: ${e.message || e.name}`); }
+    credId = b64(cred.rawId);
+    const r = cred.getClientExtensionResults();
+    prf = r && r.prf && r.prf.results && r.prf.results.first; // given at creation by newer Safari versions
+    try { sessionStorage.setItem(PENDING, JSON.stringify({ credId, prfSalt, hkdfSalt })); } catch { /* ignore */ }
+  }
+  if (!prf) {
+    try { prf = await prfWhenFocused(credId, prfSalt); }
+    catch (e) {
+      if (e.code === 'noprf') { try { sessionStorage.removeItem(PENDING); } catch { /* ignore */ } throw e; }
+      throw new Error(notFocused(e) ? 'Almost done: tap the button once more to finish with Touch ID / Face ID (the passkey is already saved).' : `Setup could not finish: ${e.message || e.name}. Tap the button again to retry.`);
+    }
+  }
+  try { sessionStorage.removeItem(PENDING); } catch { /* ignore */ }
   return { meta: { credId, prfSalt, hkdfSalt, since: new Date().toISOString() }, key: await keyFromPrf(prf, hkdfSalt) };
 }
 export async function unlock(meta) {
-  try { return await keyFromPrf(await prfFor(meta.credId, meta.prfSalt), meta.hkdfSalt); }
-  catch (e) { if (e.code === 'noprf') throw e; throw new Error(e.name === 'NotAllowedError' ? 'Face ID was cancelled or did not match.' : `Unlock failed (${e.name || e.message}).`); }
+  try { return await keyFromPrf(await prfWhenFocused(meta.credId, meta.prfSalt), meta.hkdfSalt); }
+  catch (e) { if (e.code === 'noprf') throw e; throw new Error(notFocused(e) ? 'Not quite ready yet: tap Unlock once more.' : e.name === 'NotAllowedError' ? 'Touch ID / Face ID was cancelled or did not match. Tap Unlock to try again.' : `Unlock failed (${e.name || e.message}).`); }
 }
 export async function seal(obj, key) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
