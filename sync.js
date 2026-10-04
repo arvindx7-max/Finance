@@ -6,7 +6,7 @@ import { change, fresh, recompute, saveSettings, state } from './state.js';
 import { render } from './views.js';
 // ---------------- change timestamps (so two devices can merge) ----------------
 export const MAPS = [['vendorRules', 'v'], ['txRules', 't'], ['flagDismissed', 'f'], ['notes', 'n']];
-export const WHOLE = ['profile', 'trips', 'startMonth', 'budgets', 'goal'];
+export const WHOLE = ['profile', 'trips', 'startMonth', 'budgets', 'goal', 'savingsStart'];
 export const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 // Removed answers are kept as null so the removal itself can sync.
 export function stampDiff(before, after) {

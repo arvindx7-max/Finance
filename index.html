@@ -275,6 +275,25 @@ body.locked { padding-left: 0; }
 rect.hit { fill: transparent; cursor: pointer; }
 rect.hit:hover { fill: color-mix(in srgb, var(--ink) 5%, transparent); }
 
+/* ---------- v16: header status line, Total first, equal widths, savings balance ---------- */
+.topbar.has-status { flex-wrap: wrap; row-gap: 2px; }
+.topbar .tb-status { flex-basis: 100%; order: 3; }
+.topbar .tb-status .cloud-pill { border: 0; background: none; padding: 0; font-size: 13px; font-weight: 600; }
+.grid.fixed { table-layout: fixed; min-width: 0; width: calc(150px + var(--cols) * 104px); }
+.grid.fixed col.c-line { width: 150px; } .grid.fixed col.c-num { width: 104px; }
+.grid.fixed th:first-child { min-width: 0; max-width: none; }
+.grid .tot { background: color-mix(in srgb, var(--indigo) 6%, var(--surface)); }
+.grid tr.total .tot, .grid thead .tot { background: color-mix(in srgb, var(--indigo) 9%, var(--surface)); }
+.savbars { list-style: none; margin: 10px 0 4px; padding: 0; display: flex; gap: 6px; height: 90px; align-items: flex-end; }
+.savbars li { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; height: 100%; font-size: 11px; color: var(--muted); }
+.savbars i { display: block; width: 70%; border-radius: 6px 6px 2px 2px; background: color-mix(in srgb, var(--lagoon) 40%, transparent); margin-bottom: 4px; }
+.savbars li.on i { background: var(--lagoon); } .savbars li.on { color: var(--ink); font-weight: 700; }
+.tabbar .brand img { border: 0 !important; border-radius: 0 !important; background: none; }
+.lockscreen img { border: 0; border-radius: 0; }
+@media (min-width: 960px) {
+  .grid.fixed { width: calc(240px + var(--cols) * 116px); } .grid.fixed col.c-line { width: 240px; } .grid.fixed col.c-num { width: 116px; }
+}
+
 /* ---------- navigation ---------- */
 .tabbar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-around; background: color-mix(in srgb, var(--surface) 86%, transparent); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); border-top: 1px solid var(--line); padding: 6px 4px calc(6px + env(safe-area-inset-bottom)); z-index: 5; }
 .tabbar .brand { display: none; }

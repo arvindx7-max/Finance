@@ -120,6 +120,21 @@ export function goal(agg, g) {
   return { year, target: +g.amount, saved, months: n, avg: r2(avg), remaining, projected, needPerMonth, onTrack: projected >= g.amount };
 }
 
+// ---------- I28 savings balance (estimate) ----------
+// Starts from the balance you enter and follows only what this account can see:
+// + money moved to savings, − top-ups taken back, − money passed through to India.
+export function savingsBalance(agg, start) {
+  if (!start || start.amount === undefined || start.amount === null || !start.month) return null;
+  let bal = +start.amount; const points = [];
+  for (const s of agg.summary) {
+    if (s.month < start.month) continue;
+    const change = r2(s.netToSav - s.passThrough);
+    bal = r2(bal + change);
+    points.push({ month: s.month, change, balance: bal, toSav: s.toSav, fromSav: s.fromSav, passThrough: s.passThrough });
+  }
+  return { start: { month: start.month, amount: +start.amount }, points, now: points.length ? points[points.length - 1].balance : +start.amount };
+}
+
 // ---------- I6 upcoming fixed payments (the month after the latest data) ----------
 export function upcoming(agg) {
   const last = agg.months[agg.months.length - 1]; if (!last) return { month: null, items: [], total: 0 };

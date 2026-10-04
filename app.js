@@ -8,7 +8,7 @@ import { change, fresh, load, recompute, state, txById, undo } from './state.js'
 import { cfg, chooseVault, cloud, createVaultFlow, loadCloud, refreshStatus, saveCloudMeta, syncNow, unlockFlow } from './sync.js';
 import { BIO, ask, dialogDone, disableLock, enableLock, lockFallback, unlockApp } from './security.js';
 import { exportBackup, exportExcel, exportRules, importFiles } from './io.js';
-import { addUserRule, applyTheme, assign, budgetSheet, createLine, currentTheme, drillSheet, goalSheet, isDark, manageSheet, monthsIn, newLineSheet, oneTimeSheet, periodLabel, render, ruleMatches, ruleSheetHtml, searchHits, searchResults, takePendingNew, txList } from './views.js';
+import { addUserRule, applyTheme, assign, budgetSheet, createLine, currentTheme, drillSheet, goalSheet, isDark, manageSheet, monthsIn, newLineSheet, oneTimeSheet, periodLabel, render, ruleMatches, ruleSheetHtml, savBalSheet, searchHits, searchResults, takePendingNew, txList } from './views.js';
 // ---------------- events ----------------
 document.addEventListener('click', async (e) => {
   const b = e.target.closest('button, [data-section], [data-cell], [data-drill], [data-pjump]');
@@ -72,6 +72,8 @@ document.addEventListener('click', async (e) => {
   else if (act === 'lockoff') { if (await ask({ title: 'Turn off app lock?', text: 'The data on this device will no longer be encrypted with ${BIO}; your device\'s own lock still protects it.', ok: 'Turn off', danger: true })) { await disableLock(); render(); toast('App lock is off'); } }
   else if (act === 'editbudgets') budgetSheet();
   else if (act === 'editgoal') goalSheet();
+  else if (act === 'editsavbal') savBalSheet();
+  else if (act === 'clearsavbal') { closeSheet(); await change('Savings starting balance removed', (s) => { s.savingsStart = null; }); }
   else if (act === 'cleargoal') { closeSheet(); await change('Savings goal removed', (s) => { s.goal = null; }); }
 
   else if (act === 'gsignin') {
@@ -156,6 +158,10 @@ document.addEventListener('submit', async (e) => {
   } else if (f.dataset.act === 'budgets') {
     const nb = {}; for (const [k, v] of fd.entries()) if (v !== '' && +v > 0) nb[k] = +v;
     closeSheet(); await change('Budgets saved', (s) => { s.budgets = nb; });
+  } else if (f.dataset.act === 'savbal') {
+    const v = { month: fd.get('month'), amount: Math.round(parseFloat(String(fd.get('amount')).replace(',', '.')) * 100) / 100 };
+    if (Number.isNaN(v.amount)) return;
+    closeSheet(); await change('Savings starting balance saved', (s) => { s.savingsStart = v; });
   } else if (f.dataset.act === 'goal') {
     const goal = { year: +fd.get('year'), amount: +fd.get('amount') };
     closeSheet(); await change('Savings goal saved', (s) => { s.goal = goal; });

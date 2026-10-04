@@ -116,6 +116,7 @@ export const DEFAULT_SETTINGS = {
   notes: {},         // tx id -> your note on that booking
   budgets: {},       // variable group -> monthly budget in €
   goal: null,        // { year, amount } yearly savings goal
+  savingsStart: null, // { month, amount }: savings account balance at the start of that month (for the estimate)
   profile: null,     // the user's rules file
 };
 export const emptyProfile = () => ({ app: 'finance-insights-rules', version: 1, lines: [], rules: [], notes: {}, sheetNames: {}, trips: [], startMonth: null });

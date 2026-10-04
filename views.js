@@ -9,7 +9,7 @@ import { cloud, cloudCard, cloudPill, cloudReady, live, same } from './sync.js';
 import { DEVICE, lockCard, lockView } from './security.js';
 import { pdfStatements } from './io.js';
 // ---------------- insights tab ----------------
-export const APP_VERSION = 'v15';
+export const APP_VERSION = 'v16';
 export const pct = (x) => `${Math.round(x * 100)}%`;
 export function bar(ratio, tone) { const w = Math.min(100, Math.max(0, ratio * 100)); return `<span class="pbar ${tone}"><i style="width:${w.toFixed(1)}%"></i></span>`; }
 export function insightsView() {
@@ -54,7 +54,21 @@ export function insightsView() {
     ${pt.total ? `<div class="shares"><div><b class="num">${pct(pt.grocShare)}</b><span>groceries &amp; bakery<br>${eur(pt.groceries)}</span></div><div><b class="num">${pct(pt.eatShare)}</b><span>eating out<br>${eur(pt.eatingOut)}</span></div><div><b class="num">${eur(pt.avgGroceryBill)}</b><span>average supermarket bill<br>${pt.perMonthGroceryTrips} trips a month</span></div></div>
       <h3>Card spending by weekday</h3><ul class="wd">${pt.days.map((d) => `<li class="${d.day === pt.busiest ? 'top' : ''}"><i style="height:${(d.amount / maxDay * 100).toFixed(0)}%"></i><span>${d.day.slice(0, 2)}</span></li>`).join('')}</ul>
       <p class="fine">Most card spending happens on ${pt.busiest}s.</p>` : '<p class="fine">No variable spending in this period.</p>'}</section>`;
-  return `${topbar('Insights')}${periodPicker()}<div class="data-grid">${budgetHtml}${goalHtml}${recHtml}${upHtml}${feeHtml}${patHtml}</div>`;
+  const sb = I.savingsBalance(a, s.savingsStart);
+  let savHtml;
+  if (!sb) savHtml = `<section class="card"><h2>Savings balance <small>estimate</small></h2><p class="fine">Enter what was in your savings account at the start of a month. The app then follows every transfer between this account and your savings account to estimate the balance.</p><button class="btn" data-act="editsavbal">Set starting balance</button></section>`;
+  else {
+    const inP = sb.points.filter((x) => ms.includes(x.month)); const endP = inP.length ? inP[inP.length - 1] : null;
+    const chg = inP.reduce((x, y) => x + y.change, 0);
+    const max = Math.max(1, ...sb.points.map((x) => Math.abs(x.balance)));
+    savHtml = `<section class="card"><h2>Savings balance <small>estimate</small></h2>
+      <div class="goal"><b class="num">${eur(endP ? endP.balance : sb.now)}</b><span>${endP ? `end of ${label}` : 'latest estimate'}</span></div>
+      ${endP ? `<p class="fine">${chg >= 0 ? 'Up' : 'Down'} ${eur(Math.abs(chg))} in ${label}: moved in ${eur(inP.reduce((x, y) => x + y.toSav, 0))}, taken back ${eur(inP.reduce((x, y) => x + y.fromSav, 0))}${inP.some((y) => y.passThrough) ? `, passed on to India ${eur(inP.reduce((x, y) => x + y.passThrough, 0))}` : ''}.</p>` : ''}
+      <ul class="savbars">${sb.points.map((x) => `<li class="${ms.includes(x.month) ? 'on' : ''}"><i style="height:${Math.max(4, Math.abs(x.balance) / max * 100).toFixed(0)}%"></i><span>${h(monthLabel(x.month, true))}</span></li>`).join('')}</ul>
+      <p class="fine">Started at ${eur(sb.start.amount)} on 1 ${h(monthLabel(sb.start.month))}. Only transfers this account can see are counted; interest, other deposits or spending from that account are not.</p>
+      <button class="link" data-act="editsavbal">Change starting balance</button></section>`;
+  }
+  return `${topbar('Insights')}${periodPicker()}<div class="data-grid">${savHtml}${budgetHtml}${goalHtml}${recHtml}${upHtml}${feeHtml}${patHtml}</div>`;
 }
 export function budgetSheet() {
   const groups = [...new Set(state.agg.order.filter((l) => l.sec === 'variable').map((l) => l.group || 'Other'))];
@@ -63,6 +77,13 @@ export function budgetSheet() {
   sheet(`<h2>Monthly budgets</h2><p class="fine">Leave a field empty for no budget. Your average so far is shown as a guide.</p>
   <form class="stack" data-act="budgets">${groups.map((g) => `<label>${h(g)} <small>average ${eur(avg(g))}</small><input type="number" inputmode="decimal" min="0" step="10" name="${h(g)}" value="${b[g] || ''}" placeholder="—"></label>`).join('')}
   <button class="btn primary">Save budgets</button><button type="button" class="btn" data-act="close">Cancel</button></form>`);
+}
+export function savBalSheet() {
+  const cur = state.settings.savingsStart || {}; const ms = state.agg.months;
+  sheet(`<h2>Savings starting balance</h2><p class="fine">What was in your savings account at the start of the chosen month? Check it once in that account's banking app. This is an estimate tool; it never touches that account.</p>
+  <form class="stack" data-act="savbal"><label>Balance at the start of<select name="month">${ms.map((m) => `<option value="${m}"${(cur.month || ms[0]) === m ? ' selected' : ''}>${h(monthLabel(m))}</option>`).join('')}</select></label>
+  <label>Balance (€)<input type="number" inputmode="decimal" name="amount" step="0.01" value="${cur.amount ?? ''}" required></label>
+  <button class="btn primary">Save</button>${state.settings.savingsStart ? '<button type="button" class="btn warn" data-act="clearsavbal">Remove</button>' : ''}<button type="button" class="btn" data-act="close">Cancel</button></form>`);
 }
 export function goalSheet() {
   const g = state.settings.goal || {}; const y = g.year || new Date().getFullYear();
@@ -196,9 +217,10 @@ export function applyTheme(t) {
 }
 export function isDark() { return document.documentElement.dataset.theme === 'dark' || (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches); }
 export function topbar(title) {
-  return `<header class="topbar"><h1>${h(title)}</h1><div class="row">${cloudPill()}<button class="icon-btn" data-act="search" aria-label="Search bookings"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg></button><button class="icon-btn" data-act="theme" aria-label="Switch to ${isDark() ? 'light' : 'dark'} theme">${isDark()
+  const status = cloudPill();
+  return `<header class="topbar${status ? ' has-status' : ''}"><h1>${h(title)}</h1><div class="row"><button class="icon-btn" data-act="search" aria-label="Search bookings"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg></button><button class="icon-btn" data-act="theme" aria-label="Switch to ${isDark() ? 'light' : 'dark'} theme">${isDark()
     ? '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>'
-    : '<svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></svg>'}</button></div></header>`;
+    : '<svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></svg>'}</button></div>${status ? `<div class="tb-status">${status}</div>` : ''}</header>`;
 }
 
 // ---------------- overview ----------------
@@ -332,7 +354,7 @@ export function barsH(items) {
 // ---------------- months (workbook-style tables) + search ----------------
 export function shortDates(dates) {
   const s = [...dates].sort(); const dm = (d) => `${d.slice(8, 10)}.${d.slice(5, 7)}`;
-  return s.length > 3 ? `${s.length}x · ${dm(s[0])}–${dm(s[s.length - 1])}` : s.map(dm).join(', ');
+  return s.length > 2 ? `${s.length}x · ${dm(s[0])}–${dm(s[s.length - 1])}` : s.map(dm).join(', ');
 }
 export const SEG = [['fixed', 'Fixed'], ['variable', 'Variable'], ['onetime', 'One-time'], ['income', 'Income'], ['search', 'Search']];
 export function monthsView() {
@@ -354,14 +376,14 @@ export function monthsView() {
     const cells = ms.map((m) => { const c = a.cell[`${l.id}|${m}`]; if (!c) return '<td class="nil">–</td>'; const v = sign * c.amt; tot += v;
       const heat = shade && avgL ? Math.max(0, Math.min(1, (v / avgL - 1.15) / 1.2)) : 0;
       return `<td${heat > 0 ? ` class="hot" style="--heat:${(heat * 30 + 8).toFixed(0)}%" title="${Math.round(v / avgL * 100)}% of usual"` : ''}><button data-cell="${h(l.id)}|${m}">${n2(v)}<small>${h(shortDates(c.dates))}</small></button></td>`; }).join('');
-    return `${bar}<tr><th>${h(l.label)}</th>${cells}<td class="tot">${n2(tot)}</td></tr>`;
+    return `${bar}<tr><th>${h(l.label)}</th><td class="tot">${n2(tot)}</td>${cells}</tr>`;
   }).join('');
   const sumOf = Object.fromEntries(a.summary.map((x) => [x.month, x]));
-  const footRow = (label, key) => `<tr class="total"><th>${label}</th>${ms.map((m) => `<td>${n2(sumOf[m][key])}</td>`).join('')}<td class="tot">${n2(a.summary.reduce((x, s) => x + s[key], 0))}</td></tr>`;
+  const footRow = (label, key) => `<tr class="total"><th>${label}</th><td class="tot">${n2(a.summary.reduce((x, s) => x + s[key], 0))}</td>${ms.map((m) => `<td>${n2(sumOf[m][key])}</td>`).join('')}</tr>`;
   const foot = state.section === 'income'
     ? [['Earned income', 'earned'], ['Total spent', 'spent'], ['Sent to India (own money)', 'india'], ['Saved', 'saved'], ['Moved to savings, net', 'netToSav'], ['Kept in account', 'kept']].map(([l, k]) => footRow(l, k)).join('')
     : footRow('Total', state.section);
-  return `${topbar('Months')}${seg}<div class="tablewrap"><table class="grid"><thead><tr><th>Line</th>${ms.map((m) => `<th>${monthLabel(m, true)}</th>`).join('')}<th>Total</th></tr></thead><tbody>${rows || `<tr><td colspan="${ms.length + 2}" class="fine">Nothing in this section yet.</td></tr>`}</tbody><tfoot>${foot}</tfoot></table></div>
+  return `${topbar('Months')}${seg}<div class="tablewrap"><table class="grid fixed" style="--cols:${ms.length + 1}"><colgroup><col class="c-line"><col class="c-num">${ms.map(() => '<col class="c-num">').join('')}</colgroup><thead><tr><th>Line</th><th class="tot">Total</th>${ms.map((m) => `<th>${monthLabel(m, true)}</th>`).join('')}</tr></thead><tbody>${rows || `<tr><td colspan="${ms.length + 2}" class="fine">Nothing in this section yet.</td></tr>`}</tbody><tfoot>${foot}</tfoot></table></div>
   <p class="fine pad">Tap an amount to see its bookings and move any of them to another line. Tinted amounts are well above that line's usual level.</p>`;
 }
 export function searchView() {
