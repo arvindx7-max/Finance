@@ -9,7 +9,7 @@ import { cloud, cloudCard, cloudPill, cloudReady, live, same } from './sync.js';
 import { DEVICE, lockCard, lockView } from './security.js';
 import { pdfStatements } from './io.js';
 // ---------------- insights tab ----------------
-export const APP_VERSION = 'v16';
+export const APP_VERSION = 'v17';
 export const pct = (x) => `${Math.round(x * 100)}%`;
 export function bar(ratio, tone) { const w = Math.min(100, Math.max(0, ratio * 100)); return `<span class="pbar ${tone}"><i style="width:${w.toFixed(1)}%"></i></span>`; }
 export function insightsView() {
@@ -108,7 +108,7 @@ export function addUserRule(s, kw, line, sign) {
   s.profile ||= emptyProfile();
   const rule = { line, any: [escRe(kw)], mine: true, label: kw, since: new Date().toISOString().slice(0, 10) };
   if (sign) rule.sign = sign;
-  s.profile.rules = [rule, ...(s.profile.rules || []).filter((r) => !(r.mine && r.label === kw))];
+  s.profile.rules = [rule, ...(s.profile.rules || []).filter((r) => !(r.mine && r.label === kw && (r.sign || '') === (sign || '')))];
 }
 export function ruleSheetHtml(kw = '', line = '', sign = '') {
   const hits = kw.trim().length >= 2 ? ruleMatches(kw.trim(), sign) : [];
@@ -189,7 +189,7 @@ export function periodLabel(key, mode, short = false) {
   if (mode === 'year') return key;
   const ms = state.agg.months; return ms.length ? `${monthLabel(ms[0], true)} ${ms[0].slice(0, 4)} – ${monthLabel(ms[ms.length - 1], true)} ${ms[ms.length - 1].slice(0, 4)}` : 'All';
 }
-export const SUM_KEYS = ['earned', 'fixed', 'variable', 'onetime', 'spent', 'indiaGross', 'passThrough', 'india', 'saved', 'toSav', 'fromSav', 'netToSav', 'kept', 'unassigned'];
+export const SUM_KEYS = ['earned', 'fixed', 'variable', 'onetime', 'spent', 'indiaGross', 'passThrough', 'passThroughSav', 'india', 'saved', 'toSav', 'fromSav', 'netToSav', 'kept', 'unassigned'];
 export function sumMonths(months) {
   const out = Object.fromEntries(SUM_KEYS.map((k) => [k, 0]));
   for (const s of state.agg.summary) if (months.includes(s.month)) for (const k of SUM_KEYS) out[k] = Math.round((out[k] + s[k]) * 100) / 100;
@@ -224,6 +224,12 @@ export function topbar(title) {
 }
 
 // ---------------- overview ----------------
+function ring(rate, neg) {
+  const r = 52, c = 2 * Math.PI * r, f = Math.max(0, Math.min(1, Math.abs(rate)));
+  return `<svg class="ring${neg ? ' neg' : ''}" viewBox="0 0 132 132" width="132" height="132" role="img" aria-label="${Math.round(rate * 100)}% of earnings saved">
+    <circle cx="66" cy="66" r="${r}" class="track"/><circle cx="66" cy="66" r="${r}" class="val" stroke-dasharray="${(f * c).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 66 66)"/>
+    <text x="66" y="60" text-anchor="middle" class="rl">${neg ? 'Over' : 'Saved'}</text><text x="66" y="86" text-anchor="middle" class="rv">${Math.round(rate * 100)}%</text></svg>`;
+}
 export function overviewView() {
   ensurePeriod();
   const p = state.period; const ms = monthsIn(p.key, p.mode); const s = sumMonths(ms);
@@ -244,18 +250,21 @@ export function overviewView() {
   <div class="overview">
   <section class="hero">
     <div class="hero-head"><p>${h(periodLabel(p.key, p.mode))}</p><span class="badge${s.saved < 0 ? ' neg' : ''}">${s.saved >= 0 ? `${rate}% of earnings saved` : s.spent > s.earned ? 'Spent more than earned' : 'Sent more to India than you saved'}</span></div>
-    <div class="saved-fig${s.saved < 0 ? ' neg' : ''}" data-count="${s.saved}">${eur(s.saved)}</div>
-    <p class="saved-cap">saved${p.mode === 'all' ? ' in total' : ''}</p>
+    <div class="hero-main">${ring(s.earned ? s.saved / s.earned : 0, s.saved < 0)}
+      <div><div class="saved-fig${s.saved < 0 ? ' neg' : ''}" data-count="${s.saved}">${eur(s.saved)}</div>
+      <p class="saved-cap">saved${p.mode === 'all' ? ' in total' : ''}</p></div></div>
     <div class="river" role="img" aria-label="How earned income was used">${river}</div>
     <ul class="flow">
-      <li class="lead"><i class="dot c-earned"></i><span>Earned income</span><b>${eur(s.earned)}</b></li>
-      <li><i class="dot c-fixed"></i><span>Fixed / recurring</span><b>−${eur(s.fixed)}</b></li>
-      <li><i class="dot c-variable"></i><span>Variable</span><b>−${eur(s.variable)}</b></li>
-      <li><i class="dot c-onetime"></i><span>One-time</span><b>−${eur(s.onetime)}</b></li>
-      <li><i class="dot c-india"></i><span>Sent to India</span><b>−${eur(s.indiaGross)}</b></li>
-      ${s.passThrough ? `<li class="sub"><i></i><span>${h(lineLabel('pt.in'))}</span><b>+${eur(s.passThrough)}</b></li>` : ''}
+      <li class="lead go" data-gosec="income"><i class="dot c-earned"></i><span>Earned income</span><b>${eur(s.earned)}</b><em>›</em></li>
+      <li class="go" data-gosec="fixed"><i class="dot c-fixed"></i><span>Fixed / recurring</span><b>−${eur(s.fixed)}</b><em>›</em></li>
+      <li class="go" data-gosec="variable"><i class="dot c-variable"></i><span>Variable</span><b>−${eur(s.variable)}</b><em>›</em></li>
+      <li class="go" data-gosec="onetime"><i class="dot c-onetime"></i><span>One-time</span><b>−${eur(s.onetime)}</b><em>›</em></li>
+      <li class="go" data-gosec="income"><i class="dot c-india"></i><span>Sent to India, own money</span><b>−${eur(s.india)}</b><em>›</em></li>
       <li class="total"><i class="dot c-saved"></i><span>Saved</span><b>${eur(s.saved)}</b></li>
     </ul>
+    ${s.indiaGross || s.passThrough ? `<div class="india-card"><span class="flag" aria-hidden="true">🇮🇳</span><div><h3>India remittances</h3>
+      <p><span>Sent to India</span><b>${eur(s.indiaGross)}</b></p>${s.passThroughSav ? `<p><span>${h(lineLabel('pt.sav'))}</span><b class="pos">+${eur(s.passThroughSav)}</b></p>` : ''}${s.passThrough - s.passThroughSav > 0.005 ? `<p><span>${h(lineLabel('pt.in'))}</span><b class="pos">+${eur(s.passThrough - s.passThroughSav)}</b></p>` : ''}
+      <p class="own"><span>From your own money</span><b>${eur(s.india)}</b></p></div></div>` : ''}
     <div class="went"><h3>Where the saved money is</h3>
       <div><span>Moved to savings, net</span><b>${eur(s.netToSav)}</b></div>
       <div><span>Kept in this account</span><b>${eur(s.kept)}</b></div>
@@ -356,19 +365,38 @@ export function shortDates(dates) {
   const s = [...dates].sort(); const dm = (d) => `${d.slice(8, 10)}.${d.slice(5, 7)}`;
   return s.length > 2 ? `${s.length}x · ${dm(s[0])}–${dm(s[s.length - 1])}` : s.map(dm).join(', ');
 }
+// Small trend line from oldest to newest value.
+export function spark(vals, w = 48, hgt = 16) {
+  if (vals.length < 2 || !vals.some((v) => v)) return `<svg class="spark" width="${w}" height="${hgt}"></svg>`;
+  const max = Math.max(...vals), min = Math.min(...vals, 0), span = max - min || 1;
+  const pts = vals.map((v, i) => `${(i / (vals.length - 1) * (w - 2) + 1).toFixed(1)},${(hgt - 1 - (v - min) / span * (hgt - 2)).toFixed(1)}`).join(' ');
+  return `<svg class="spark" width="${w}" height="${hgt}" viewBox="0 0 ${w} ${hgt}" aria-hidden="true"><polyline points="${pts}"/></svg>`;
+}
+// Neutral coloured initials for a line (no shop logos).
+export function badge(label) {
+  const words = label.replace(/\(.*?\)/g, '').replace(/[^A-Za-zÄÖÜäöüß0-9 ]/g, ' ').trim().split(/\s+/).filter(Boolean);
+  const ini = (words.length > 1 ? words[0][0] + words[1][0] : (words[0] || '?').slice(0, 2)).toUpperCase();
+  let hue = 0; for (const c of label) hue = (hue * 31 + c.charCodeAt(0)) % 360;
+  return `<i class="ini" style="--hue:${hue}">${h(ini)}</i>`;
+}
 export const SEG = [['fixed', 'Fixed'], ['variable', 'Variable'], ['onetime', 'One-time'], ['income', 'Income'], ['search', 'Search']];
 export function monthsView() {
   const seg = `<div class="seg" role="tablist">${SEG.map(([k, l]) => `<button role="tab" aria-selected="${state.section === k}" data-section="${k}">${l}</button>`).join('')}</div>`;
   if (state.section === 'search') return topbar('Months') + seg + searchView();
   const a = state.agg; const ms = [...a.months].reverse(); // newest month first
+  if (!WIDE.matches) return topbar('Months') + seg + monthCards(ms);
   const secs = state.section === 'income' ? ['income', 'india', 'passthrough', 'tosav', 'fromsav'] : [state.section];
   const ls = a.order.filter((l) => secs.includes(l.sec));
   let group = null;
+  const groupOf = (l) => (state.section === 'variable' ? l.group : state.section === 'income' ? (l.sec === 'income' ? 'Earned income' : SECTIONS[l.sec]) : '');
+  const signOf = (l) => (['income', 'passthrough', 'fromsav'].includes(l.sec) ? 1 : -1);
+  const last6 = [...ms].reverse().slice(-6);
+  const groupTrend = (g) => last6.map((m) => ls.filter((l) => groupOf(l) === g).reduce((x, l) => x + signOf(l) * (a.cell[`${l.id}|${m}`]?.amt || 0), 0));
   const rows = ls.map((l) => {
     const sign = ['income', 'passthrough', 'fromsav'].includes(l.sec) ? 1 : -1;
     const g = state.section === 'variable' ? l.group : state.section === 'income' ? (l.sec === 'income' ? 'Earned income' : SECTIONS[l.sec]) : '';
     let bar = '';
-    if (g && g !== group) { group = g; bar = `<tr class="bar"><th colspan="${ms.length + 2}"><span>${h(g)}</span></th></tr>`; }
+    if (g && g !== group) { group = g; bar = `<tr class="bar"><th colspan="${ms.length + 2}"><span>${h(g)}${spark(groupTrend(g), 56, 14)}</span></th></tr>`; }
     let tot = 0;
     const vals = ms.map((m) => sign * (a.cell[`${l.id}|${m}`]?.amt || 0)).filter((v) => v > 0);
     const avgL = vals.length ? vals.reduce((x, y) => x + y, 0) / vals.length : 0;
@@ -379,12 +407,53 @@ export function monthsView() {
     return `${bar}<tr><th>${h(l.label)}</th><td class="tot">${n2(tot)}</td>${cells}</tr>`;
   }).join('');
   const sumOf = Object.fromEntries(a.summary.map((x) => [x.month, x]));
-  const footRow = (label, key) => `<tr class="total"><th>${label}</th><td class="tot">${n2(a.summary.reduce((x, s) => x + s[key], 0))}</td>${ms.map((m) => `<td>${n2(sumOf[m][key])}</td>`).join('')}</tr>`;
+  const footRow = (label, key) => `<tr class="total"><th><span class="tl">${label}${spark(a.summary.slice(-6).map((x) => x[key]), 56, 14)}</span></th><td class="tot">${n2(a.summary.reduce((x, s) => x + s[key], 0))}</td>${ms.map((m) => `<td>${n2(sumOf[m][key])}</td>`).join('')}</tr>`;
   const foot = state.section === 'income'
     ? [['Earned income', 'earned'], ['Total spent', 'spent'], ['Sent to India (own money)', 'india'], ['Saved', 'saved'], ['Moved to savings, net', 'netToSav'], ['Kept in account', 'kept']].map(([l, k]) => footRow(l, k)).join('')
     : footRow('Total', state.section);
-  return `${topbar('Months')}${seg}<div class="tablewrap"><table class="grid fixed" style="--cols:${ms.length + 1}"><colgroup><col class="c-line"><col class="c-num">${ms.map(() => '<col class="c-num">').join('')}</colgroup><thead><tr><th>Line</th><th class="tot">Total</th>${ms.map((m) => `<th>${monthLabel(m, true)}</th>`).join('')}</tr></thead><tbody>${rows || `<tr><td colspan="${ms.length + 2}" class="fine">Nothing in this section yet.</td></tr>`}</tbody><tfoot>${foot}</tfoot></table></div>
+  return `${topbar('Months')}${seg}<div class="split">${summaryColumn()}<div class="tablewrap"><table class="grid fixed" style="--cols:${ms.length + 1}"><colgroup><col class="c-line"><col class="c-num">${ms.map(() => '<col class="c-num">').join('')}</colgroup><thead><tr><th>Line</th><th class="tot">Total</th>${ms.map((m) => `<th>${monthLabel(m, true)}</th>`).join('')}</tr></thead><tbody>${rows || `<tr><td colspan="${ms.length + 2}" class="fine">Nothing in this section yet.</td></tr>`}</tbody><tfoot>${foot}</tfoot></table></div>
+</div>
   <p class="fine pad">Tap an amount to see its bookings and move any of them to another line. Tinted amounts are well above that line's usual level.</p>`;
+}
+// Laptop: the month's totals beside the table, plus India remittances by month.
+function summaryColumn() {
+  const a = state.agg; const m = a.months[a.months.length - 1]; const s = a.summary.find((x) => x.month === m);
+  const row = (label, v, sec, cls = '') => `<li class="${cls}"${sec ? ` data-section="${sec}"` : ''}><span>${label}</span><b>${eur(v)}</b>${sec ? '<em>›</em>' : ''}</li>`;
+  const india = a.summary.map((x) => x.indiaGross); const max = Math.max(1, ...india);
+  return `<aside class="sumcol"><section class="card"><h2>${h(monthLabel(m))}</h2><ul class="sumlist">
+    ${row('Earned income', s.earned, 'income', 'lead')}${row('Fixed / recurring', -s.fixed, 'fixed')}${row('Variable', -s.variable, 'variable')}${row('One-time', -s.onetime, 'onetime')}${row('Sent to India, own money', -s.india, 'income')}${row('Saved', s.saved, '', 'total')}</ul></section>
+    <section class="card"><h2>India remittances</h2><ul class="minibars">${a.summary.map((x) => `<li title="${h(monthLabel(x.month))}: ${eur(x.indiaGross)}"><i style="height:${Math.max(2, x.indiaGross / max * 100).toFixed(0)}%"></i><span>${h(monthLabel(x.month, true))}</span></li>`).join('')}</ul>
+    <p class="fine">Sent in total: ${eur(india.reduce((x, y) => x + y, 0))}</p></section></aside>`;
+}
+// Phone: foldable category cards for one month at a time (no sideways scrolling).
+function monthCards(ms) {
+  const a = state.agg;
+  if (!state.mkey || !ms.includes(state.mkey)) state.mkey = ms[0];
+  const mk = state.mkey; const chrono = [...ms].reverse().slice(-6);
+  const secs = state.section === 'income' ? ['income', 'india', 'passthrough', 'tosav', 'fromsav'] : [state.section];
+  const groups = [];
+  for (const l of a.order.filter((x) => secs.includes(x.sec))) {
+    const g = state.section === 'variable' ? (l.group || 'Other') : state.section === 'income' ? (l.sec === 'income' ? 'Earned income' : SECTIONS[l.sec]) : state.section === 'fixed' ? 'Fixed costs' : 'One-time items';
+    let grp = groups.find((x) => x.name === g); if (!grp) { grp = { name: g, lines: [] }; groups.push(grp); }
+    grp.lines.push(l);
+  }
+  const sign = (l) => (['income', 'passthrough', 'fromsav'].includes(l.sec) ? 1 : -1);
+  const val = (l, m) => sign(l) * (a.cell[`${l.id}|${m}`]?.amt || 0);
+  let monthTotal = 0;
+  const cards = groups.map((g) => {
+    const sub = g.lines.reduce((x, l) => x + val(l, mk), 0); monthTotal += sub;
+    const trend = chrono.map((m) => g.lines.reduce((x, l) => x + val(l, m), 0));
+    const withData = g.lines.filter((l) => a.cell[`${l.id}|${mk}`]); const without = g.lines.filter((l) => !a.cell[`${l.id}|${mk}`]);
+    const lineRow = (l) => { const c = a.cell[`${l.id}|${mk}`]; const vals = ms.map((m) => val(l, m)).filter((v) => v);
+      const avg = vals.length ? vals.reduce((x, y) => x + y, 0) / vals.length : 0;
+      return `<li>${badge(l.label)}<span class="lt"><b>${h(l.label)}</b><small>${c ? h(shortDates(c.dates)) : 'nothing this month'}</small></span>
+        ${c ? `<button class="amt" data-cell="${h(l.id)}|${mk}">${n2(val(l, mk))}<small>avg ${n2(avg)}</small></button>` : `<span class="amt nil">–</span>`}</li>`; };
+    return `<details class="cat" open><summary><span class="cn">${h(g.name)}</span>${spark(trend)}<b>${n2(sub)}</b><i class="chev"></i></summary>
+      <ul>${withData.map(lineRow).join('')}</ul>${without.length ? `<details class="more"><summary>${without.length} more without bookings in ${h(monthLabel(mk, true))}</summary><ul>${without.map(lineRow).join('')}</ul></details>` : ''}</details>`;
+  }).join('');
+  return `<div class="periods" role="tablist" aria-label="Month">${ms.map((m) => `<button role="tab" aria-selected="${m === mk}" data-mkey="${m}">${h(monthLabel(m, true))} ${m.slice(2, 4)}</button>`).join('')}</div>
+  <div class="cards">${cards}<div class="cat-total"><span>Total ${h(monthLabel(mk))}</span><b>${n2(monthTotal)}</b></div></div>
+  <p class="fine pad">Tap an amount to see its bookings. Small lines show the last six months.</p>`;
 }
 export function searchView() {
   return `<div class="pad"><input type="search" id="q" placeholder="Vendor, text, amount or note" value="${h(state.q)}" autocomplete="off"></div><div id="results">${searchResults()}</div>`;
@@ -409,9 +478,11 @@ export function txList(txs, allDefault = false) {
   return `<ul class="txs">${[...txs].sort((x, y) => y.date.localeCompare(x.date)).map((t) => `<li>
     <div><b>${h(t.vendor)}</b><span>${deDate(t.date)}${t.cardDate && t.cardDate !== t.date ? ` · paid ${deDate(t.cardDate)}` : ''}</span></div>
     <strong class="${t.amount < 0 ? '' : 'pos'}">${eur(t.amount)}</strong>
-    <label>Line <select data-txline="${h(t.id)}">${t.line ? '' : '<option value="" selected>Choose a line…</option>'}${lineOptions(t.line)}</select></label>
-    <label class="check"><input type="checkbox" data-txall="${h(t.id)}"${allDefault ? ' checked' : ''}> Apply to every booking from ${h(t.vendor)}</label>
-    <label class="note">Note <input type="text" data-note="${h(t.id)}" value="${h((state.settings.notes || {})[t.id] || '')}" placeholder="Add a note, e.g. birthday gift" maxlength="200"></label>
+    <div class="fgroup">
+      <label class="frow"><span>Line</span><select data-txline="${h(t.id)}">${t.line ? '' : '<option value="" selected>Choose a line…</option>'}${lineOptions(t.line)}</select></label>
+      <label class="frow sw"><span>Apply to every booking<small>Use this line for every booking from ${h(t.vendor)}</small></span><input type="checkbox" class="switch" data-txall="${h(t.id)}"${allDefault ? ' checked' : ''}></label>
+      <label class="frow"><span>Note</span><input type="text" data-note="${h(t.id)}" value="${h((state.settings.notes || {})[t.id] || '')}" placeholder="e.g. birthday gift" maxlength="200"></label>
+    </div>
     ${t.amount < 0 ? `<button class="link small" data-onetime="${h(t.id)}">Make this a one-time item…</button>` : ''}
     <details><summary>Booking text</summary><p>${h(t.text)}</p></details></li>`).join('')}</ul>`;
 }
@@ -545,7 +616,7 @@ export function manageHtml() {
   const ur = userRules();
   return `<h2>Your answers and lines</h2>
   <h3>Keyword rules (${ur.length})</h3>
-  ${ur.length ? `<ul class="manage">${ur.map((r) => `<li><span><b>"${h(r.label)}"${r.sign ? ` <small>${r.sign === '+' ? 'money in' : 'money out'}</small>` : ''}</b><small>→ ${h(lineLabel(r.line))} · ${ruleMatches(r.label, r.sign).length} bookings</small></span><button class="link" data-delrule="${h(r.label)}">Remove</button></li>`).join('')}</ul>` : '<p class="fine">None yet. A keyword rule catches every booking whose text contains certain words, even when the shop name varies.</p>'}
+  ${ur.length ? `<ul class="manage">${ur.map((r) => `<li><span><b>"${h(r.label)}"${r.sign ? ` <small>${r.sign === '+' ? 'money in' : 'money out'}</small>` : ''}</b><small>→ ${h(lineLabel(r.line))} · ${ruleMatches(r.label, r.sign).length} bookings</small></span><button class="link" data-delrule="${h(r.label)}|${h(r.sign || '')}">Remove</button></li>`).join('')}</ul>` : '<p class="fine">None yet. A keyword rule catches every booking whose text contains certain words, even when the shop name varies.</p>'}
   <button class="btn" data-act="newrule">New keyword rule</button>
   <h3>Vendor answers (${v.length})</h3>
   ${v.length ? `<ul class="manage">${v.map(([k, id]) => `<li><span><b>${h(k)}</b><small>→ ${h(lineLabel(id))}</small></span><button class="link" data-delvendor="${h(k)}">Remove</button></li>`).join('')}</ul>` : '<p class="fine">None yet.</p>'}

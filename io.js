@@ -82,7 +82,12 @@ export async function loadRules(j) {
   for (const r of j.rules) for (const p of [...(r.any || []), ...(r.all || []), ...(r.none || [])]) new RegExp(p, 'i'); // fail early on a bad pattern
   const { vendorAnswers = {}, bookingAnswers = {}, dismissed = {}, ...profile } = j;
   const s = state.settings; const before = JSON.parse(JSON.stringify(s));
-  s.profile = profile;
+  // Keep what was made in the app (keyword rules, own lines) unless the file has the same item.
+  const old = s.profile || {};
+  const sameRule = (a, b) => a.mine && b.mine && a.label === b.label && (a.sign || '') === (b.sign || '');
+  const keepRules = (old.rules || []).filter((r) => r.mine && !profile.rules.some((x) => sameRule(x, r)));
+  const keepLines = (old.lines || []).filter((l) => l.id.startsWith('c.') && !profile.lines.some((x) => x.id === l.id));
+  s.profile = { ...profile, rules: [...keepRules, ...profile.rules], lines: [...profile.lines, ...keepLines] };
   if (Array.isArray(j.trips)) s.trips = j.trips;
   if (j.startMonth) s.startMonth = j.startMonth;
   s.vendorRules = { ...s.vendorRules, ...vendorAnswers };

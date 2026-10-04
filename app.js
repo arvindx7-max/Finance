@@ -11,7 +11,7 @@ import { exportBackup, exportExcel, exportRules, importFiles } from './io.js';
 import { addUserRule, applyTheme, assign, budgetSheet, createLine, currentTheme, drillSheet, goalSheet, isDark, manageSheet, monthsIn, newLineSheet, oneTimeSheet, periodLabel, render, ruleMatches, ruleSheetHtml, savBalSheet, searchHits, searchResults, takePendingNew, txList } from './views.js';
 // ---------------- events ----------------
 document.addEventListener('click', async (e) => {
-  const b = e.target.closest('button, [data-section], [data-cell], [data-drill], [data-pjump]');
+  const b = e.target.closest('button, [data-section], [data-cell], [data-drill], [data-pjump], [data-gosec]');
   if (!b) return;
   const ds = b.dataset;
   if (ds.tab) { closeSheet(); state.tab = ds.tab; render(); window.scrollTo(0, 0); return; }
@@ -27,7 +27,9 @@ document.addEventListener('click', async (e) => {
   }
   if (ds.dlg) { if (dialogDone) { const inp = $('#dlg-in'); dialogDone(ds.dlg === 'ok' ? (inp ? inp.value : true) : null); } return; }
   if (ds.pjump) { const i = ds.pjump.indexOf('|'); state.period = { mode: ds.pjump.slice(0, i), key: ds.pjump.slice(i + 1) }; render(); return; }
-  if (ds.delrule) { const kw = ds.delrule; await change(`Rule "${kw}" removed`, (s) => { s.profile.rules = s.profile.rules.filter((r) => !(r.mine && r.label === kw)); }); return; }
+  if (ds.delrule) { const i = ds.delrule.lastIndexOf('|'); const kw = ds.delrule.slice(0, i), sg = ds.delrule.slice(i + 1); await change(`Rule "${kw}" removed`, (s) => { s.profile.rules = s.profile.rules.filter((r) => !(r.mine && r.label === kw && (r.sign || '') === sg)); }); return; }
+  if (ds.mkey) { state.mkey = ds.mkey; render(); return; }
+  if (ds.gosec) { state.tab = 'months'; state.section = ds.gosec; if (state.period.mode === 'month') state.mkey = state.period.key; render(); window.scrollTo(0, 0); return; }
   if (ds.drill) {
     const i = ds.drill.lastIndexOf('|'); const g = ds.drill.slice(0, i), key = ds.drill.slice(i + 1); const mode = state.period.mode === 'all' ? 'month' : state.period.mode; const ms = monthsIn(key, mode);
     drillSheet(`${g}, ${periodLabel(key, mode)}`, state.agg.rows.filter((t) => t.line && ms.includes(monthOf(t.date)) && lineMeta(t.line).sec === 'variable' && (lineMeta(t.line).group || 'Other') === g).map((t) => t.id));
@@ -40,7 +42,7 @@ document.addEventListener('click', async (e) => {
   }
   if (ds.tx) { const id = ds.tx; const html = () => { const t = txById(id); return `<h2>${h(t.vendor)}</h2>${txList([t])}<button class="btn" data-act="close">Done</button>`; }; sheet(html(), html); return; }
   if (ds.onetime) { oneTimeSheet(ds.onetime); return; }
-  if (ds.passyes) { const id = ds.passyes; await change('Marked as forwarded to India', (s) => { s.txRules[id] = 'pt.in'; }); return; }
+  if (ds.passyes) { const id = ds.passyes; await change('Marked as forwarded to India from savings', (s) => { s.txRules[id] = 'pt.sav'; }); return; }
   if (ds.dismiss) { const id = ds.dismiss; await change('Kept as regular spend', (s) => { (s.flagDismissed ||= {})[id] = true; }); return; }
   if (ds.deltrip) { const i = +ds.deltrip; await change('Trip removed', (s) => { s.trips.splice(i, 1); }); return; }
   if (ds.delvendor) { const k = ds.delvendor; await change('Vendor answer removed', (s) => { delete s.vendorRules[k]; }); return; }
@@ -69,7 +71,7 @@ document.addEventListener('click', async (e) => {
   else if (act === 'search') { closeSheet(); state.tab = 'months'; state.section = 'search'; render(); window.scrollTo(0, 0); const q = $('#q'); if (q) q.focus(); }
   else if (act === 'unlockapp') await unlockApp();
   else if (act === 'lockfallback') await lockFallback();
-  else if (act === 'lockoff') { if (await ask({ title: 'Turn off app lock?', text: 'The data on this device will no longer be encrypted with ${BIO}; your device\'s own lock still protects it.', ok: 'Turn off', danger: true })) { await disableLock(); render(); toast('App lock is off'); } }
+  else if (act === 'lockoff') { if (await ask({ title: 'Turn off app lock?', text: `The data on this device will no longer be encrypted with ${BIO}; your device's own lock still protects it.`, ok: 'Turn off', danger: true })) { await disableLock(); render(); toast('App lock is off'); } }
   else if (act === 'editbudgets') budgetSheet();
   else if (act === 'editgoal') goalSheet();
   else if (act === 'editsavbal') savBalSheet();
@@ -209,6 +211,8 @@ document.addEventListener('keydown', (e) => {
   else if (red && red.error) { state.tab = 'data'; toast(red.error); }
   refreshStatus(); render();
   if (cloud.status === 'synced' && !(lock.on && !lock.key)) syncNow(true);
+  // B34: iOS can close the app right after an edit; save the encrypted data immediately.
+  window.addEventListener('pagehide', () => { if (lock.on && lock.key) sealAll(); });
   let hiddenAt = 0;
   document.addEventListener('visibilitychange', async () => {
     if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); if (lock.on && lock.key) await sealAll(); return; }

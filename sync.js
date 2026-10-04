@@ -1,7 +1,8 @@
 // Merging between devices and the encrypted Google Drive vault.
 import * as C from './cloud.js';
 import { $, h } from './util.js';
-import { clear, kvGet, kvSet, lock, putMany } from './storage.js';
+import { clear, kvGet, kvSet, lock, putMany, scheduleSeal } from './storage.js';
+import * as L from './lock.js';
 import { change, fresh, recompute, saveSettings, state } from './state.js';
 import { render } from './views.js';
 // ---------------- change timestamps (so two devices can merge) ----------------
@@ -137,6 +138,7 @@ export async function unlockFlow(pass, remember) {
   cloud.meta.salt = head.salt; cloud.meta.iter = head.iter; cloud.meta.remoteModified = null;
   cloud.key = key; cloud.dirty = state.tx.length > 0; await saveCloudMeta();
   if (remember) await kvSet('cloudKey', key);
+  if (lock.on) { lock.vaultRaw = await L.exportRaw(await C.deriveKey(pass, head.salt, head.iter, true)); scheduleSeal(); }
   refreshStatus(); await syncNow();
 }
 export async function chooseVault() {

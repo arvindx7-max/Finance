@@ -126,6 +126,7 @@ export function buildWorkbook(agg, recon, settings) {
     fixedSh.set(1, r, last ? r2(-last.txs[last.txs.length - 1].amount) : null, S.num);
     r++;
   }
+  if (r === 3) { fixedSh.set(0, r, '(none)', S.legend); r++; }
   const fixedTotalRow = r;
   sumRow(fixedSh, r, 'TOTAL fixed / recurring', months, mFirst, [`@3:@${r - 1}`], monthVals(agg, 'fixed'));
   fixedSh.set(1, r, '', S.totLbl);
@@ -147,6 +148,7 @@ export function buildWorkbook(agg, recon, settings) {
     const tripNote = l.id.startsWith('trip:') ? (() => { const t = settings.trips.find((x) => `trip:${x.name}` === l.id); return t ? `Restaurant charges dated ${deDate(t.from)}–${deDate(t.to)}, kept apart from regular spend.` : ''; })() : '';
     lineRow(vs, r, l.label, l.id, months, vFirst, agg, -1, tripNote); r++;
   }
+  if (r === 3) { vs.set(0, r, '(none)', S.legend); r++; }
   const varTotalRow = r;
   sumRow(vs, r, 'TOTAL VARIABLE SPEND', months, vFirst, [`@3:@${r - 1}`], monthVals(agg, 'variable'));
   r += 2;
@@ -158,8 +160,9 @@ export function buildWorkbook(agg, recon, settings) {
   monthHeader(os, 'Description', months, vFirst);
   r = 3;
   for (const l of secLines(agg, 'onetime')) { lineRow(os, r, l.label, l.id, months, vFirst, agg, -1); r++; }
+  if (r === 3) { os.set(0, r, '(none)', S.legend); r++; }
   const otTotalRow = r;
-  sumRow(os, r, 'TOTAL ONE-TIME', months, vFirst, r > 3 ? [`@3:@${r - 1}`] : ['@3:@3'], monthVals(agg, 'onetime'));
+  sumRow(os, r, 'TOTAL ONE-TIME', months, vFirst, [`@3:@${r - 1}`], monthVals(agg, 'onetime'));
   r += 2;
   os.set(0, r++, 'Kept out of regular monthly averages, but counted in savings.', S.legend);
   const offs = agg.rows.filter((t) => t.line && t.line.startsWith('off.'));

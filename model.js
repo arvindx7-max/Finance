@@ -61,6 +61,7 @@ export const BASE_LINES = [
 
   L('ind.remit', 'india', 'Money transfer to India', 'Transfers to India'),
   L('pt.in', 'passthrough', 'Received to forward to India', 'Transfers to India'),
+  L('pt.sav', 'passthrough', 'From savings, forwarded to India', 'Transfers to India'),
   L('sv.out', 'tosav', 'Moved to savings account', 'Savings movements'),
   L('sv.in', 'fromsav', 'Top-up from savings account', 'Savings movements'),
 
@@ -252,10 +253,13 @@ export function aggregate(txs, settings) {
   });
   // One pass over the bookings: sums per section and month, plus each month's balance change.
   const acc = new Map(); const add = (k, v) => acc.set(k, (acc.get(k) || 0) + v);
+  // Pass-through money counts as "from savings" when marked so, or when it comes from the same sender as savings transfers.
+  const savSenders = new Set(rows.filter((t) => t.line && ['tosav', 'fromsav'].includes(lineMeta(t.line).sec)).map((t) => t.vkey));
   for (const t of rows) {
     const m = monthOf(t.date); add(`kept|${m}`, t.amount);
     if (!t.line) { add(`none|${m}`, t.amount); continue; }
-    add(`${lineMeta(t.line).sec}|${m}`, t.amount);
+    const sec = lineMeta(t.line).sec; add(`${sec}|${m}`, t.amount);
+    if (sec === 'passthrough' && (t.line === 'pt.sav' || savSenders.has(t.vkey))) add(`ptsav|${m}`, t.amount);
   }
   const bySec = (sec, m) => r2(acc.get(`${sec}|${m}`) || 0);
   const summary = months.map((m) => {
@@ -267,10 +271,11 @@ export function aggregate(txs, settings) {
     const saved = r2(earned - spent - india);
     const toSav = -bySec('tosav', m), fromSav = bySec('fromsav', m);
     const netToSav = r2(toSav - fromSav);
+    const passThroughSav = r2(acc.get(`ptsav|${m}`) || 0);
     const kept = r2(acc.get(`kept|${m}`) || 0); // actual balance change, by booking month
     const unassigned = r2(acc.get(`none|${m}`) || 0);
     return { month: m, earned, fixed, variable, onetime, spent, indiaGross, passThrough, india, saved,
-      toSav, fromSav, netToSav, kept, unassigned, savingsRate: earned ? saved / earned : 0 };
+      toSav, fromSav, netToSav, passThroughSav, kept, unassigned, savingsRate: earned ? saved / earned : 0 };
   });
   const review = rows.filter((t) => !t.line);
   // Possible one-time items: a variable booking far above what is usual for its line.

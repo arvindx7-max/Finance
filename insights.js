@@ -128,9 +128,9 @@ export function savingsBalance(agg, start) {
   let bal = +start.amount; const points = [];
   for (const s of agg.summary) {
     if (s.month < start.month) continue;
-    const change = r2(s.netToSav - s.passThrough);
+    const change = r2(s.netToSav - s.passThroughSav); // only pass-through that came out of savings
     bal = r2(bal + change);
-    points.push({ month: s.month, change, balance: bal, toSav: s.toSav, fromSav: s.fromSav, passThrough: s.passThrough });
+    points.push({ month: s.month, change, balance: bal, toSav: s.toSav, fromSav: s.fromSav, passThrough: s.passThroughSav });
   }
   return { start: { month: start.month, amount: +start.amount }, points, now: points.length ? points[points.length - 1].balance : +start.amount };
 }
@@ -169,7 +169,7 @@ export function patterns(agg, months) {
   const groc = v.filter((t) => grp(t) === 'Supermarkets');
   const grocTotal = -sum(groc.map((t) => t.amount)) - sum(v.filter((t) => grp(t) === 'Bakery & butcher').map((t) => t.amount));
   const days = WD.map(() => 0);
-  for (const t of v) { if (!/Kartenzahlung/i.test(t.type || t.text)) continue; const d = new Date(t.cardDate || t.date); days[(d.getDay() + 6) % 7] -= t.amount; }
+  for (const t of v) { if (!/Kartenzahlung/i.test(t.type || t.text)) continue; const [yy, mm, dd] = (t.cardDate || t.date).split('-').map(Number); const d = new Date(yy, mm - 1, dd); days[(d.getDay() + 6) % 7] -= t.amount; }
   const busiest = days.indexOf(Math.max(...days));
   return { total: r2(total), eatingOut: r2(eat), groceries: r2(grocTotal), eatShare: total ? eat / total : 0, grocShare: total ? grocTotal / total : 0,
     avgGroceryBill: r2(mean(groc.map((t) => -t.amount))), groceryTrips: groc.length, perMonthGroceryTrips: months.length ? r2(groc.length / months.length) : 0,

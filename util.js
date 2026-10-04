@@ -1,5 +1,4 @@
 // Small shared helpers: DOM, formatting, busy indicator, toasts, bottom sheets.
-import { change, undo } from './state.js';
 // ---------------- helpers ----------------
 export const $ = (sel, el = document) => el.querySelector(sel);
 export const h = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -20,12 +19,20 @@ export let sheetTimer;
 export let sheetRefresh = null;
 export let sheetOpener = null;
 // refresh = a function returning the sheet's html again, so the sheet updates after a change.
+// iOS-style top bar: title in the middle, Done on the right (forms keep their own Save / Cancel buttons).
+function chrome(html) {
+  const m = html.match(/^\s*<h2>([\s\S]*?)<\/h2>/); if (!m) return html;
+  let rest = html.slice(m[0].length).replace(/<button class="btn" data-act="close">Done<\/button>\s*$/, '');
+  const form = /<form/.test(rest);
+  return `<div class="sheet-bar"><span>${form ? '<button type="button" class="link" data-act="close">Cancel</button>' : ''}</span><b tabindex="-1">${m[1]}</b><span>${form ? '' : '<button type="button" class="link strong" data-act="close">Done</button>'}</span></div>${rest}`;
+}
 export function sheet(html, refresh = null) {
+  html = chrome(html); if (refresh) { const r = refresh; refresh = () => chrome(r()); }
   clearTimeout(sheetTimer);
   const s = $('#sheet'); const body = $('#sheet-body'); const reopen = !s.hidden;
   if (!reopen) sheetOpener = document.activeElement;
   body.innerHTML = html; sheetRefresh = refresh; s.hidden = false;
-  requestAnimationFrame(() => { s.classList.add('open'); if (!reopen) { const f = body.querySelector('h2'); if (f) { f.tabIndex = -1; f.focus({ preventScroll: true }); } } });
+  requestAnimationFrame(() => { s.classList.add('open'); if (!reopen) { const f = body.querySelector('.sheet-bar b, h2'); if (f) { f.tabIndex = -1; f.focus({ preventScroll: true }); } } });
 }
 export function closeSheet() {
   const s = $('#sheet'); if (s.hidden) return;
