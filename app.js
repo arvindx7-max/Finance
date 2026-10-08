@@ -7,6 +7,7 @@ import { all, clear, kvSet, lock, sealAll } from './storage.js';
 import { change, fresh, load, recompute, state, txById, undo } from './state.js';
 import { cfg, chooseVault, cloud, createVaultFlow, loadCloud, refreshStatus, saveCloudMeta, syncNow, unlockFlow } from './sync.js';
 import { BIO, ask, dialogDone, disableLock, enableLock, lockFallback, unlockApp } from './security.js';
+import { applyMotion, setMotion } from './motion.js';
 import { exportBackup, exportExcel, exportRules, importFiles } from './io.js';
 import { addUserRule, applyTheme, assign, budgetSheet, createLine, currentTheme, drillSheet, forgetView, goalSheet, isDark, manageSheet, monthsIn, newLineSheet, oneTimeSheet, overviewSheet, periodLabel, render, ruleMatches, ruleSheetHtml, savBalSheet, searchHits, searchResults, takePendingNew, txList } from './views.js';
 // ---------------- events ----------------
@@ -14,7 +15,7 @@ import { addUserRule, applyTheme, assign, budgetSheet, createLine, currentTheme,
 ['gesturestart', 'gesturechange'].forEach((ev) => document.addEventListener(ev, (e) => e.preventDefault(), { passive: false }));
 document.addEventListener('wheel', (e) => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
 document.addEventListener('touchmove', (e) => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
-const TAB_LABEL = { overview: 'Overview', months: 'Months', insights: 'Insights', review: 'Review', data: 'Data' };
+const TAB_LABEL = { overview: 'Overview', months: 'Months', insights: 'Insights', review: 'Review', data: 'Data', settings: 'Settings' };
 // Open Months at a section (and month), remembering where we came from for the "‹ back" link.
 function goMonths(section, month) {
   if (state.tab !== 'months') state.back = { tab: state.tab, label: TAB_LABEL[state.tab], y: window.scrollY };
@@ -37,6 +38,8 @@ document.addEventListener('click', async (e) => {
   if (ds.pmode) { state.period.mode = ds.pmode; state.period.key = null; render(); return; }
   if (ds.pkey) { state.period.key = ds.pkey; render(); return; }
   if (ds.themeset) { applyTheme(ds.themeset); render(); return; }
+  if (ds.motionset) { setMotion('mode', ds.motionset); render(); return; }
+  if (ds.speedset) { setMotion('speed', ds.speedset); render(); return; }
   if (ds.section) { state.section = ds.section; render(); return; }
   if (ds.cell) {
     const key = ds.cell; const i = key.lastIndexOf('|'); const id = key.slice(0, i), m = key.slice(i + 1);
@@ -223,7 +226,7 @@ document.addEventListener('keydown', (e) => {
 // ---------------- boot ----------------
 (async () => {
   if (navigator.storage && navigator.storage.persist) { try { await navigator.storage.persist(); } catch { /* not granted */ } }
-  applyTheme(currentTheme());
+  applyTheme(currentTheme()); applyMotion();
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (currentTheme() === 'auto') applyTheme('auto'); });
   await load(); await loadCloud();
   const red = C.readRedirect();

@@ -223,12 +223,15 @@ export function buildWorkbook(agg, recon, settings) {
   months.forEach((m, i) => { const c = vFirst + i * 2; const x = agg.summary[i]; is.set(c, r, x.earned ? Math.round(x.saved / x.earned * 1000) / 1000 : 0, S.pct, `IF(${colL(c)}${rowEarned}=0,0,${colL(c)}${rowSav}/${colL(c)}${rowEarned})`); is.set(c + 1, r, '', S.totLbl); });
   r += 2;
   is.set(0, r++, 'Where the saved money went', S.bold);
-  const rowNet = put('Net moved to savings (moved − top-ups)', S_('netToSav'), (c) => `${colL(c)}${toB.row}-${colL(c)}${fromB.row}`, [S.text, S.num]);
-  put('Kept in this account', months.map((_, i) => r2(agg.summary[i].saved - agg.summary[i].netToSav)), (c) => `${colL(c)}${rowSav}-${colL(c)}${rowNet}`, [S.text, S.num]);
+  const net = (c) => `(${colL(c)}${toB.row}-${colL(c)}${fromB.row})`; const kept = (c) => `(${colL(c)}${rowSav}-${net(c)})`;
+  put('Net moved to savings (moved − top-ups)', S_('movedIn'), (c) => `MAX(0,${net(c)})`, [S.text, S.num]);
+  if (agg.summary.some((s) => s.takenBack)) put('Taken back from savings, net', S_('takenBack'), (c) => `MAX(0,-${net(c)})`, [S.text, S.num]);
+  put('Kept in this account', S_('keptIn'), (c) => `MAX(0,${kept(c)})`, [S.text, S.num]);
+  if (agg.summary.some((s) => s.fromBalance)) put("From the account's earlier balance", S_('fromBalance'), (c) => `MAX(0,-${kept(c)})`, [S.text, S.num]);
   r += 1;
   is.set(0, r++, 'Saved = Earned income − Total spent − Sent to India from your own money.', S.legend);
   is.set(0, r++, 'Transfers to and from your savings account are internal: they show where savings went, not income or cost.', S.legend);
-  is.set(0, r++, 'Kept in this account equals the change in the account balance for the month (see Reconciliation).', S.legend);
+  is.set(0, r++, "Kept in this account minus From the account's earlier balance equals the change in the account balance (see Reconciliation).", S.legend);
 
   // ---- Reconciliation ----
   const rc = new Sheet('Reconciliation'); sheets.push(rc);

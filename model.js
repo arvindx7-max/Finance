@@ -275,7 +275,9 @@ export function aggregate(txs, settings) {
     const kept = r2(acc.get(`kept|${m}`) || 0); // actual balance change, by booking month
     const unassigned = r2(acc.get(`none|${m}`) || 0);
     return { month: m, earned, fixed, variable, onetime, spent, indiaGross, passThrough, india, saved,
-      toSav, fromSav, netToSav, passThroughSav, kept, unassigned, savingsRate: earned ? saved / earned : 0 };
+      toSav, fromSav, netToSav, passThroughSav, kept,
+      // never negative (B43): each month either keeps money or draws on the earlier balance; same for savings transfers
+      keptIn: r2(Math.max(0, kept)), fromBalance: r2(Math.max(0, -kept)), movedIn: r2(Math.max(0, netToSav)), takenBack: r2(Math.max(0, -netToSav)), unassigned, savingsRate: earned ? saved / earned : 0 };
   });
   const review = rows.filter((t) => !t.line);
   // Possible one-time items: a variable booking far above what is usual for its line.

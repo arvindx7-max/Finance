@@ -66,9 +66,11 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .banner { display: block; width: calc(100% - 24px); margin: 8px 12px 0; padding: 11px 14px; border: 1px solid color-mix(in srgb, var(--saffron) 55%, transparent); background: color-mix(in srgb, var(--saffron) 14%, var(--surface)); border-radius: var(--r-ctl); text-align: left; font-size: 14px; }
 
 /* ---------- period picker ---------- */
-.modes { display: flex; gap: 2px; margin: 12px 12px 0; padding: 3px; background: var(--raised); border: 1px solid var(--line); border-radius: 14px; }
-.modes button { flex: 1; border: 0; background: transparent; padding: 8px 4px; border-radius: 11px; font-size: 14px; font-weight: 550; color: var(--muted); transition: background .2s, color .2s; }
-.modes [aria-selected="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 1px 3px color-mix(in srgb, var(--ink) 18%, transparent); }
+.modes { position: relative; display: flex; gap: 2px; margin: 12px 12px 0; padding: 3px; background: var(--raised); border: 1px solid var(--line); border-radius: 14px; }
+.modes button { position: relative; z-index: 1; flex: 1; border: 0; background: transparent; padding: 8px 4px; border-radius: 11px; font-size: 14px; font-weight: 550; color: var(--muted); transition: color .2s; }
+.modes [aria-selected="true"], .modes [aria-pressed="true"] { color: var(--ink); }
+/* v18: one sliding thumb per segmented control (moved with transform only) */
+.thumb { position: absolute; top: 3px; bottom: 3px; left: 0; width: 0; border-radius: 11px; background: var(--surface); box-shadow: 0 1px 3px color-mix(in srgb, var(--ink) 18%, transparent); pointer-events: none; will-change: transform; transform-origin: 50% 50%; }
 .periods { display: flex; gap: 6px; overflow-x: auto; padding: 10px 12px 2px; scrollbar-width: none; }
 .periods::-webkit-scrollbar { display: none; }
 .periods button { flex: 0 0 auto; border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 7px 14px; font-size: 14px; font-family: var(--num); font-weight: 600; }
@@ -130,9 +132,9 @@ button.seal { border: 0; background: none; padding: 0; text-align: left; }
 .hbars b { font-family: var(--num); }
 
 /* ---------- tables ---------- */
-.seg { display: flex; gap: 2px; margin: 12px 12px 10px; padding: 3px; background: var(--raised); border: 1px solid var(--line); border-radius: 14px; overflow-x: auto; }
-.seg button { flex: 1; border: 0; background: transparent; padding: 8px 6px; border-radius: 11px; font-size: 13px; font-weight: 550; color: var(--muted); white-space: nowrap; }
-.seg [aria-selected="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 1px 3px color-mix(in srgb, var(--ink) 18%, transparent); }
+.seg { position: relative; display: flex; gap: 2px; margin: 12px 12px 10px; padding: 3px; background: var(--raised); border: 1px solid var(--line); border-radius: 14px; overflow-x: auto; }
+.seg button { position: relative; z-index: 1; flex: 1; border: 0; background: transparent; padding: 8px 6px; border-radius: 11px; font-size: 13px; font-weight: 550; color: var(--muted); white-space: nowrap; }
+.seg [aria-selected="true"] { color: var(--ink); }
 .tablewrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 0 12px; border-radius: var(--r-card); background: var(--surface); border: 1px solid var(--line); }
 table.grid { border-collapse: collapse; font-size: 13px; min-width: 100%; }
 .grid th, .grid td { padding: 9px 10px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -157,9 +159,7 @@ table.grid { border-collapse: collapse; font-size: 13px; min-width: 100%; }
 .link.small { font-size: 13px; grid-column: 1 / -1; justify-self: start; }
 .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 input[type=month], input[type=date], input[name=name], select { font: inherit; font-size: 16px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); color: var(--ink); }
-.themes { display: flex; gap: 6px; }
-.themes button { flex: 1; border: 1px solid var(--line); background: var(--raised); border-radius: var(--r-ctl); padding: 10px; font-weight: 600; }
-.themes [aria-pressed="true"] { border-color: var(--ink); background: var(--surface); box-shadow: inset 0 0 0 1px var(--ink); }
+.modes.opts { margin: 10px 0 8px; }
 .tripform { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .tripform input[name=name], .tripform .btn { grid-column: 1 / -1; }
 .trips { list-style: none; padding: 0; margin: 0 0 10px; }
@@ -384,9 +384,18 @@ html { touch-action: manipulation; -webkit-text-size-adjust: 100%; }
 /* ---------- navigation ---------- */
 .tabbar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-around; background: color-mix(in srgb, var(--surface) 86%, transparent); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); border-top: 1px solid var(--line); padding: 6px 4px calc(6px + env(safe-area-inset-bottom)); z-index: 5; }
 .tabbar .brand { display: none; }
-.tabbar button { flex: 1; border: 0; background: none; padding: 6px 0 2px; font-size: 11px; color: var(--muted); display: flex; flex-direction: column; align-items: center; gap: 3px; position: relative; }
+.tabbar button { z-index: 1; flex: 1; border: 0; background: none; padding: 6px 0 2px; font-size: 11px; color: var(--muted); display: flex; flex-direction: column; align-items: center; gap: 3px; position: relative; }
 .tabbar svg { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .tabbar [aria-current="page"] { color: var(--ink); font-weight: 650; }
+.tabbar svg { overflow: visible; }
+.tabbar svg * { transform-box: fill-box; }
+.tabbar .lens, .tabbar .zoomring { transform-box: view-box; transform-origin: 11px 11px; }
+.tabbar .cog { transform-box: view-box; transform-origin: 12px 12px; }
+.tabbar .bulb-glow { fill: var(--saffron); stroke: none; opacity: 0; transform-origin: center; }
+.tabbar .zoomring { opacity: 0; stroke-width: 1.4; }
+.tabbar .pill { position: absolute; left: 0; top: 0; width: 0; height: 0; border-radius: 14px; background: var(--raised); pointer-events: none; will-change: transform; transform-origin: 50% 50%; z-index: 0; }
+.ttl-old { position: absolute; left: 0; top: 0; white-space: nowrap; pointer-events: none; }
+.topbar h1 { position: relative; }
 #review-badge { position: absolute; top: 0; left: calc(50% + 6px); background: var(--coral); color: #fff; font-size: 10px; border-radius: 999px; padding: 1px 6px; font-weight: 700; }
 
 #sheet { position: fixed; inset: 0; background: color-mix(in srgb, #050A16 45%, transparent); z-index: 10; display: flex; align-items: flex-end; }
@@ -405,7 +414,6 @@ html { touch-action: manipulation; -webkit-text-size-adjust: 100%; }
   .tabbar .brand { display: block; padding: 0 10px 22px; }
   .tabbar .brand img { width: 56px; height: 56px; border-radius: 14px; border: 1px solid var(--line); display: block; }
   .tabbar button { flex: 0 0 auto; flex-direction: row; gap: 12px; padding: 11px 12px; font-size: 15px; border-radius: 12px; justify-content: flex-start; }
-  .tabbar [aria-current="page"] { background: var(--raised); }
   #review-badge { position: static; margin-left: auto; }
   .topbar { padding: 6px 12px 4px; }
   .overview { display: grid; grid-template-columns: minmax(360px, 5fr) 7fr; gap: 0 4px; align-items: start; }
@@ -421,18 +429,23 @@ html { touch-action: manipulation; -webkit-text-size-adjust: 100%; }
   #sheet.open #sheet-body { opacity: 1; }
   #toast { left: 260px; bottom: 24px; }
 }
-@media (prefers-reduced-motion: reduce) { .river i { animation: none; } #sheet-body { transition: none; } }
+.river i { animation-duration: calc(.7s * var(--spd, 1)); }
+html[data-motion="reduced"] .river i { animation: none; }
+html[data-motion="reduced"] #sheet-body { transform: none; transition: opacity .2s; opacity: 0; }
+html[data-motion="reduced"] #sheet.open #sheet-body { opacity: 1; }
 </style>
 </head>
 <body>
 <div id="busy" hidden></div>
 <nav class="tabbar" aria-label="Sections">
   <div class="brand"><img src="logo-icon.png" alt="Logo" width="56" height="56"></div>
-  <button data-tab="overview" aria-current="page"><svg viewBox="0 0 24 24"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2"/></svg>Overview</button>
-  <button data-tab="months"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 4v16"/></svg>Months</button>
-  <button data-tab="insights"><svg viewBox="0 0 24 24"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.6 10.8c.6.5 1 1.2 1 2V17h5.2v-1.2c0-.8.4-1.5 1-2A6 6 0 0 0 12 3z"/></svg>Insights</button>
-  <button data-tab="review"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg>Review<span id="review-badge" hidden>0</span></button>
-  <button data-tab="data"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M4 21h16"/></svg>Data</button>
+  <span class="pill" aria-hidden="true"></span>
+  <button data-tab="overview" aria-current="page"><svg viewBox="0 0 24 24"><path class="b1" d="M4 19V9"/><path class="b2" d="M10 19V5"/><path class="b3" d="M16 19v-7"/><path d="M22 19H2"/></svg>Overview</button>
+  <button data-tab="months"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path class="g1" d="M3 10h18"/><path class="g2" d="M9 4v16"/></svg>Months</button>
+  <button data-tab="insights"><svg viewBox="0 0 24 24"><circle class="bulb-glow" cx="12" cy="9" r="6"/><path class="bulb" d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.6 10.8c.6.5 1 1.2 1 2V17h5.2v-1.2c0-.8.4-1.5 1-2A6 6 0 0 0 12 3z"/></svg>Insights</button>
+  <button data-tab="review"><svg viewBox="0 0 24 24"><g class="lens"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></g><circle class="zoomring" cx="11" cy="11" r="3"/></svg>Review<span id="review-badge" hidden>0</span></button>
+  <button data-tab="data"><svg viewBox="0 0 24 24"><path class="arrow" d="M12 3v12M7 10l5 5 5-5"/><path d="M4 21h16"/></svg>Data</button>
+  <button data-tab="settings"><svg viewBox="0 0 24 24"><g class="cog"><path d="M10.54 4.95L10.72 2.49A9.6 9.6 0 0 1 13.28 2.49L13.46 4.95A7.2 7.2 0 0 1 15.95 5.98L17.82 4.37A9.6 9.6 0 0 1 19.63 6.18L18.02 8.05A7.2 7.2 0 0 1 19.05 10.54L21.51 10.72A9.6 9.6 0 0 1 21.51 13.28L19.05 13.46A7.2 7.2 0 0 1 18.02 15.95L19.63 17.82A9.6 9.6 0 0 1 17.82 19.63L15.95 18.02A7.2 7.2 0 0 1 13.46 19.05L13.28 21.51A9.6 9.6 0 0 1 10.72 21.51L10.54 19.05A7.2 7.2 0 0 1 8.05 18.02L6.18 19.63A9.6 9.6 0 0 1 4.37 17.82L5.98 15.95A7.2 7.2 0 0 1 4.95 13.46L2.49 13.28A9.6 9.6 0 0 1 2.49 10.72L4.95 10.54A7.2 7.2 0 0 1 5.98 8.05L4.37 6.18A9.6 9.6 0 0 1 6.18 4.37L8.05 5.98A7.2 7.2 0 0 1 10.54 4.95Z"/><circle cx="12" cy="12" r="3"/></g></svg>Settings</button>
 </nav>
 <main id="main" class="app"></main>
 <div id="sheet" hidden><div id="sheet-body" role="dialog" aria-modal="true" aria-label="Details"></div></div>

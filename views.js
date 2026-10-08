@@ -7,9 +7,10 @@ import { all, lock } from './storage.js';
 import { change, state, txById } from './state.js';
 import { cloud, cloudCard, cloudPill, cloudReady, live, same } from './sync.js';
 import { DEVICE, lockCard, lockView } from './security.js';
+import { MOTIONS, SPEEDS, afterRender, beforeRender, motion, reducedMotion, resetMotion } from './motion.js';
 import { pdfStatements } from './io.js';
 // ---------------- insights tab ----------------
-export const APP_VERSION = 'v17.1';
+export const APP_VERSION = 'v18';
 export const pct = (x) => `${Math.round(x * 100)}%`;
 export function bar(ratio, tone) { const w = Math.min(100, Math.max(0, ratio * 100)); return `<span class="pbar ${tone}"><i style="width:${w.toFixed(1)}%"></i></span>`; }
 export function insightsView() {
@@ -148,12 +149,13 @@ export function render() {
   $('#review-badge').textContent = n; $('#review-badge').hidden = !n;
   const main = $('#main');
   document.body.classList.toggle('locked', lock.on && !lock.key);
-  if (lock.on && !lock.key) { main.innerHTML = lockView(); return; }
+  if (lock.on && !lock.key) { main.innerHTML = lockView(); lastView = null; resetMotion(); return; }
+  const first = lastView === null && !main.querySelector('.topbar'); beforeRender(main);
   const view = `${state.tab}|${state.section}`; const same = view === lastView;
   const SIDEWAYS = ['.periods', '.seg', '.tablewrap'];
   const lefts = same ? Object.fromEntries(SIDEWAYS.map((sel) => [sel, main.querySelector(sel)?.scrollLeft])) : {}; const y = window.scrollY;
-  if (!state.tx.length && state.tab !== 'data') { main.innerHTML = emptyView(); lastView = view; return; }
-  main.innerHTML = { overview: overviewView, months: monthsView, insights: insightsView, review: reviewView, data: dataView }[state.tab]();
+  if (!state.tx.length && state.tab !== 'data' && state.tab !== 'settings') { main.innerHTML = emptyView(); lastView = view; afterRender(main, state, { first }); return; }
+  main.innerHTML = { overview: overviewView, months: monthsView, insights: insightsView, review: reviewView, data: dataView, settings: settingsView }[state.tab]();
   for (const sel of SIDEWAYS) { const el = main.querySelector(sel); if (el && lefts[sel] != null) el.scrollLeft = lefts[sel]; }
   if (state.focusMonth) { // opened from the Overview: bring that month's column into view
     const wrap = main.querySelector('.tablewrap'); const th = wrap && wrap.querySelector(`thead th[data-m="${state.focusMonth}"]`);
@@ -163,6 +165,7 @@ export function render() {
   for (const sel of ['.periods', '.seg']) keepSelectedInView(main.querySelector(sel));
   if (same) window.scrollTo(0, y);
   lastView = view;
+  afterRender(main, state, { first });
   if (state.tab === 'overview') animateCount();
   refreshSheet();
 }
@@ -204,7 +207,7 @@ export function periodLabel(key, mode, short = false) {
   if (mode === 'year') return key;
   const ms = state.agg.months; return ms.length ? `${monthLabel(ms[0], true)} ${ms[0].slice(0, 4)} – ${monthLabel(ms[ms.length - 1], true)} ${ms[ms.length - 1].slice(0, 4)}` : 'All';
 }
-export const SUM_KEYS = ['earned', 'fixed', 'variable', 'onetime', 'spent', 'indiaGross', 'passThrough', 'passThroughSav', 'india', 'saved', 'toSav', 'fromSav', 'netToSav', 'kept', 'unassigned'];
+export const SUM_KEYS = ['earned', 'fixed', 'variable', 'onetime', 'spent', 'indiaGross', 'passThrough', 'passThroughSav', 'india', 'saved', 'toSav', 'fromSav', 'netToSav', 'kept', 'unassigned', 'keptIn', 'fromBalance', 'movedIn', 'takenBack'];
 export function sumMonths(months) {
   const out = Object.fromEntries(SUM_KEYS.map((k) => [k, 0]));
   for (const s of state.agg.summary) if (months.includes(s.month)) for (const k of SUM_KEYS) out[k] = Math.round((out[k] + s[k]) * 100) / 100;
@@ -283,8 +286,10 @@ export function overviewView() {
       <p><span>Sent to India</span><b>${eur(s.indiaGross)}</b></p>${s.passThroughSav ? `<p><span>${h(lineLabel('pt.sav'))}</span><b class="pos">+${eur(s.passThroughSav)}</b></p>` : ''}${s.passThrough - s.passThroughSav > 0.005 ? `<p><span>${h(lineLabel('pt.in'))}</span><b class="pos">+${eur(s.passThrough - s.passThroughSav)}</b></p>` : ''}
       <p class="own"><span>From your own money</span><b>${eur(s.india)}</b></p></div></div>` : ''}
     <div class="went"><h3>Where the saved money is</h3>
-      <div><span>Moved to savings, net</span><b>${eur(s.netToSav)}</b></div>
-      <div><span>Kept in this account</span><b>${eur(s.kept)}</b></div>
+      <div><span>Moved to savings, net</span><b>${eur(s.movedIn)}</b></div>
+      ${s.takenBack ? `<div><span>Taken back from savings</span><b>${eur(s.takenBack)}</b></div>` : ''}
+      <div><span>Kept in this account</span><b>${eur(s.keptIn)}</b></div>
+      ${s.fromBalance ? `<div><span>From the account's earlier balance</span><b>${eur(s.fromBalance)}</b></div>` : ''}
     </div>
     ${tie === null ? '<p class="seal">No statement for this period yet</p>' : `<p class="seal ${tie ? 'ok' : 'bad'}">${tie ? `Ties to ${rec.length > 1 ? `${rec.length} statements` : 'the statement'}: ${eur(rec[0].open)} → ${eur(rec[rec.length - 1].close)}` : 'A statement in this period does not tie (see Data)'}</p>`}
     ${state.agg.passFlags.some((t) => ms.includes(monthOf(t.date))) ? '<button class="seal bad" data-tab="review">Was money from savings forwarded to India? Answer in Review</button>' : ''}
@@ -309,8 +314,8 @@ export let lastSaved = 0;
 export function animateCount() {
   const el = document.querySelector('[data-count]'); if (!el) return;
   const to = +el.dataset.count; const from = lastSaved; lastSaved = to;
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches || from === to) return;
-  const t0 = performance.now(); const dur = 650;
+  if (reducedMotion() || from === to) return;
+  const t0 = performance.now(); const dur = 650 * ({ quick: 0.7, normal: 1, relaxed: 1.5 }[motion.speed]);
   const step = (now) => { const k = Math.min(1, (now - t0) / dur); const e = 1 - Math.pow(1 - k, 3); el.textContent = eur(from + (to - from) * e); if (k < 1) requestAnimationFrame(step); else el.textContent = eur(to); };
   requestAnimationFrame(step);
 }
@@ -429,7 +434,7 @@ export function monthsView() {
   const sumOf = Object.fromEntries(a.summary.map((x) => [x.month, x]));
   const footRow = (label, key) => `<tr class="total"><th><span class="tl">${label}${spark(a.summary.slice(-6).map((x) => x[key]), 56, 14)}</span></th><td class="tot">${n2(a.summary.reduce((x, s) => x + s[key], 0))}</td>${ms.map((m) => `<td>${n2(sumOf[m][key])}</td>`).join('')}</tr>`;
   const foot = state.section === 'income'
-    ? [['Earned income', 'earned'], ['Total spent', 'spent'], ['Sent to India (own money)', 'india'], ['Saved', 'saved'], ['Moved to savings, net', 'netToSav'], ['Kept in account', 'kept']].map(([l, k]) => footRow(l, k)).join('')
+    ? [['Earned income', 'earned'], ['Total spent', 'spent'], ['Sent to India (own money)', 'india'], ['Saved', 'saved'], ['Moved to savings, net', 'movedIn'], ...(a.summary.some((x) => x.takenBack) ? [['Taken back from savings', 'takenBack']] : []), ['Kept in account', 'keptIn'], ...(a.summary.some((x) => x.fromBalance) ? [['From earlier balance', 'fromBalance']] : [])].map(([l, k]) => footRow(l, k)).join('')
     : footRow('Total', state.section);
   return `${topbar('Months')}${seg}<div class="split">${WIDE.matches ? summaryColumn() : ''}<div class="tablewrap"><table class="grid fixed" style="--cols:${ms.length + 1}"><colgroup><col class="c-line"><col class="c-num">${ms.map(() => '<col class="c-num">').join('')}</colgroup><thead><tr><th>Line</th><th class="tot">Total</th>${ms.map((m) => `<th data-m="${m}">${monthLabel(m, true)}</th>`).join('')}</tr></thead><tbody>${rows || `<tr><td colspan="${ms.length + 2}" class="fine">Nothing in this section yet.</td></tr>`}</tbody><tfoot>${foot}</tfoot></table></div>
 </div>
@@ -547,8 +552,7 @@ export function dataView() {
   const s = state.settings; const d = daysSince(state.lastBackup);
   const nAns = live(s.vendorRules).length + live(s.txRules).length;
   const own = (s.profile?.lines || []).filter((l) => l.id.startsWith('c.')).length;
-  const theme = currentTheme();
-  return `${topbar('Data')}<div class="data-grid">${cloudCard()}${cloudReady() && cloud.meta && cloud.meta.fileId ? lockCard() : ''}<section class="card">
+  return `${topbar('Data')}<div class="data-grid">${cloudCard()}<section class="card">
     <h2>Add statements</h2>
     <p class="fine">PDF Kontoauszug or CSV export. Overlapping files are fine: bookings already stored are skipped.</p>
     <label class="btn primary">Choose files<input type="file" accept=".pdf,.csv,.json,application/pdf,text/csv,application/json" multiple data-act="import" hidden></label>
@@ -567,11 +571,6 @@ export function dataView() {
     <h2>Excel workbook</h2>
     <p class="fine">Fixed, Variable Expenses, One-Time, Income &amp; Transfers (with the savings summary), plus Reconciliation and all transactions.</p>
     <button class="btn primary" data-act="excel">Export Excel</button>
-  </section>
-  <section class="card">
-    <h2>Appearance</h2>
-    <div class="themes" role="group" aria-label="Theme">${THEMES.map(([k, l]) => `<button data-themeset="${k}" aria-pressed="${theme === k}">${l}</button>`).join('')}</div>
-    <p class="fine">Auto follows your phone or laptop setting.</p>
   </section>
   <section class="card wide">
     <h2>Reconciliation</h2>
@@ -593,6 +592,30 @@ export function dataView() {
     <button class="btn warn" data-act="wipe">Erase everything</button>
   </section></div>
   <p class="fine pad">Finances ${APP_VERSION}. ${state.tx.length} bookings stored on this device. Works offline; nothing is sent anywhere.</p>`;
+}
+
+// ---------------- settings (v18): everything that controls how the app looks and behaves ----------------
+const opts = (label, list, cur, attr) => `<div class="modes opts" role="group" aria-label="${label}">${list.map(([k, l]) => `<button data-${attr}="${k}" aria-pressed="${cur === k}">${l}</button>`).join('')}</div>`;
+export function settingsView() {
+  const synced = cloudReady() && cloud.meta && cloud.meta.fileId;
+  const lockHtml = synced ? lockCard() : `<section class="card"><h2>App lock</h2><p class="fine">Encrypt the data on this ${DEVICE} and open the app with Face ID or Touch ID. Turn on cloud sync in Data first, so your data can always be restored with your passphrase.</p><button class="btn" data-tab="data">Go to Data</button></section>`;
+  return `${topbar('Settings')}<div class="data-grid">${lockHtml}
+  <section class="card">
+    <h2>Appearance</h2>
+    ${opts('Theme', THEMES, currentTheme(), 'themeset')}
+    <p class="fine">Auto follows your phone or laptop setting.</p>
+  </section>
+  <section class="card">
+    <h2>Motion</h2>
+    ${opts('Motion', MOTIONS, motion.mode, 'motionset')}
+    <p class="fine">${motion.mode === 'reduced' ? 'Reduced: screens cross-fade, nothing slides, stretches or zooms.' : 'Full: the tab highlight glides, icons animate and cards rise into place.'}</p>
+  </section>
+  <section class="card">
+    <h2>Animation speed</h2>
+    ${opts('Animation speed', SPEEDS, motion.speed, 'speedset')}
+    <p class="fine">How long each animation takes. Applies to both Full and Reduced.</p>
+  </section></div>
+  <p class="fine pad">Finances ${APP_VERSION}. These settings are kept on this ${DEVICE} only.</p>`;
 }
 
 export function manageSheet() { sheet(manageHtml(), manageHtml); }
