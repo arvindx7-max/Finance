@@ -3,13 +3,13 @@ import { aggregate, reconcile, DEFAULT_SETTINGS, emptyProfile, lines, SECTIONS, 
 import { buildWorkbook } from './xlsx.js';
 import * as C from './cloud.js';
 import { $, closeSheet, eur, h, hideBusy, sheet, showBusy, toast } from './util.js';
-import { all, clear, kvSet, lock, sealAll } from './storage.js';
+import { all, clear, kvSet, lock, scheduleSeal, sealAll } from './storage.js';
 import { change, fresh, load, recompute, state, txById, undo } from './state.js';
 import { cfg, chooseVault, cloud, createVaultFlow, loadCloud, refreshStatus, saveCloudMeta, syncNow, unlockFlow } from './sync.js';
 import { BIO, ask, dialogDone, disableLock, enableLock, lockFallback, unlockApp } from './security.js';
 import { applyMotion, setMotion } from './motion.js';
 import { exportBackup, exportExcel, exportRules, importFiles } from './io.js';
-import { addUserRule, applyTheme, assign, budgetSheet, createLine, currentTheme, drillSheet, forgetView, goalSheet, isDark, manageSheet, monthsIn, newLineSheet, oneTimeSheet, overviewSheet, periodLabel, render, ruleMatches, ruleSheetHtml, savBalSheet, searchHits, searchResults, takePendingNew, txList } from './views.js';
+import { APP_VERSION, addUserRule, applyPalette, applyTheme, currentPalette, assign, budgetSheet, createLine, currentTheme, drillSheet, forgetView, goalSheet, isDark, manageSheet, monthsIn, newLineSheet, oneTimeSheet, overviewSheet, periodLabel, render, ruleMatches, ruleSheetHtml, savBalSheet, searchHits, searchResults, takePendingNew, txList } from './views.js';
 // ---------------- events ----------------
 // B40: no pinch zoom (iPhone and Mac Safari send gesture events; other browsers send ctrl + wheel).
 ['gesturestart', 'gesturechange'].forEach((ev) => document.addEventListener(ev, (e) => e.preventDefault(), { passive: false }));
@@ -23,7 +23,7 @@ function goMonths(section, month) {
   forgetView(); render(); window.scrollTo(0, 0);
 }
 document.addEventListener('click', async (e) => {
-  const b = e.target.closest('button, [data-section], [data-cell], [data-drill], [data-pjump], [data-gosec]');
+  const b = e.target.closest('button, [data-section], [data-cell], [data-drill], [data-pjump], [data-gosec], [data-summonth]');
   if (!b) return;
   const ds = b.dataset;
   if (ds.tab) {
@@ -40,6 +40,7 @@ document.addEventListener('click', async (e) => {
   if (ds.themeset) { applyTheme(ds.themeset); render(); return; }
   if (ds.motionset) { setMotion('mode', ds.motionset); render(); return; }
   if (ds.speedset) { setMotion('speed', ds.speedset); render(); return; }
+  if (ds.summonth) { state.sumMonth = ds.summonth; render(); return; } // I53/I54: Mac summary follows the chosen month
   if (ds.section) { state.section = ds.section; render(); return; }
   if (ds.cell) {
     const key = ds.cell; const i = key.lastIndexOf('|'); const id = key.slice(0, i), m = key.slice(i + 1);
@@ -89,7 +90,9 @@ document.addEventListener('click', async (e) => {
   else if (act === 'exportrules') await exportRules();
   else if (act === 'manage') manageSheet();
   else if (act === 'newrule') sheet(ruleSheetHtml());
-  else if (act === 'search') { closeSheet(); if (state.tab !== 'months') state.back = { tab: state.tab, label: TAB_LABEL[state.tab] }; state.tab = 'months'; state.section = 'search'; render(); window.scrollTo(0, 0); const q = $('#q'); if (q) q.focus(); }
+  else if (act === 'settings') { closeSheet(); state.back = { tab: state.tab, label: TAB_LABEL[state.tab], y: window.scrollY }; state.tab = 'settings'; render(); window.scrollTo(0, 0); } // I50: the gear on the phone
+  else if (act === 'search') { closeSheet(); if (state.tab !== 'months') state.back = { tab: state.tab, label: TAB_LABEL[state.tab], y: window.scrollY }; // B48: remember where you were
+    state.tab = 'months'; state.section = 'search'; render(); window.scrollTo(0, 0); const q = $('#q'); if (q) q.focus(); }
   else if (act === 'back') { const bk = state.back; state.back = null; if (bk) { state.tab = bk.tab; render(); window.scrollTo(0, bk.y || 0); } }
   else if (act === 'editmonths') { closeSheet(); goMonths(b.dataset.sec, b.dataset.month); }
   else if (act === 'unlockapp') await unlockApp();
@@ -111,10 +114,10 @@ document.addEventListener('click', async (e) => {
   }
   else if (act === 'syncnow') await syncNow();
   else if (act === 'pickvault') await cloudAction('Opening Google Drive…', async () => { const id = await C.pickVault(cloud.token.token, cfg.googleApiKey, cfg.googleAppId); if (id) { cloud.meta = { fileId: id, owner: false }; await saveCloudMeta(); } });
-  else if (act === 'lockvault') { cloud.key = null; await kvSet('cloudKey', null); refreshStatus(); render(); toast('Vault locked on this device'); }
+  else if (act === 'lockvault') { cloud.key = null; await kvSet('cloudKey', null); forgetLockedVaultKey(); refreshStatus(); render(); toast('Vault locked on this device'); }
   else if (act === 'forgetvault' || act === 'disconnect') {
     if (act === 'disconnect' && !(await ask({ title: 'Stop syncing this device?', text: 'Your data stays on this device and in Google Drive.', ok: 'Stop syncing', danger: true }))) return;
-    cloud.meta = null; cloud.key = null; cloud.dirty = false; await kvSet('cloud', null); await kvSet('cloudKey', null); refreshStatus(); render();
+    cloud.meta = null; cloud.key = null; cloud.dirty = false; await kvSet('cloud', null); await kvSet('cloudKey', null); forgetLockedVaultKey(); refreshStatus(); render();
   }
   else if (act === 'theme') { applyTheme(isDark() ? 'light' : 'dark'); render(); }
   else if (act === 'newline') newLineSheet(null);
@@ -132,6 +135,7 @@ document.addEventListener('click', async (e) => {
 document.addEventListener('change', async (e) => {
   const t = e.target;
   if (t.dataset.act === 'import' && t.files.length) { await importFiles([...t.files]); t.value = ''; return; }
+  if (t.dataset.act === 'palette') { applyPalette(t.value); render(); return; }
   if (t.dataset.txline !== undefined && t.value) {
     const allBox = document.querySelector(`[data-txall="${CSS.escape(t.dataset.txline)}"]`);
     const all_ = !!(allBox && allBox.checked);
@@ -211,11 +215,18 @@ document.addEventListener('submit', async (e) => {
     await cloudAction('Unlocking…', () => unlockFlow(fd.get('p'), !!fd.get('remember')));
   }
 });
+// B46: with App lock on, the vault key also lives inside the locked data; drop it there too, or Face ID would reopen the vault.
+function forgetLockedVaultKey() { if (lock.vaultRaw) { lock.vaultRaw = null; if (lock.on) scheduleSeal(); } }
 export async function cloudAction(msg, fn) {
   showBusy(msg);
   try { await fn(); refreshStatus(); toast('Cloud sync is on'); }
-  catch (e) { if (e.code === 401) { cloud.token = null; await kvSet('gtoken', null); } refreshStatus(); toast(e.message); }
+  catch (e) { if (e.code === 401) { cloud.token = null; await kvSet('gtoken', null); } refreshStatus(); vaultProblem(e); }
   finally { hideBusy(); render(); }
+}
+// B11: when connecting to a vault fails, say exactly why and keep it on screen (a screenshot then shows the cause).
+function vaultProblem(e) {
+  const code = e.code || (e.name === 'TypeError' ? 'network' : 'other');
+  sheet(`<h2>Couldn't connect to the vault</h2><p>${h(e.message || 'Something went wrong.')}</p><p class="fine">Details for a screenshot: ${h(String(code))} · ${new Date().toLocaleString('de-DE')} · ${h(APP_VERSION)}</p><button class="btn" data-act="close">Done</button>`);
 }
 $('#sheet').addEventListener('click', (e) => { if (e.target.id === 'sheet') closeSheet(); });
 document.addEventListener('keydown', (e) => {
@@ -226,7 +237,7 @@ document.addEventListener('keydown', (e) => {
 // ---------------- boot ----------------
 (async () => {
   if (navigator.storage && navigator.storage.persist) { try { await navigator.storage.persist(); } catch { /* not granted */ } }
-  applyTheme(currentTheme()); applyMotion();
+  document.documentElement.dataset.palette = currentPalette(); applyTheme(currentTheme()); applyMotion();
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (currentTheme() === 'auto') applyTheme('auto'); });
   await load(); await loadCloud();
   const red = C.readRedirect();

@@ -24,7 +24,9 @@ function chrome(html) {
   const m = html.match(/^\s*<h2>([\s\S]*?)<\/h2>/); if (!m) return html;
   let rest = html.slice(m[0].length).replace(/<button class="btn" data-act="close">Done<\/button>\s*$/, '');
   const form = /<form/.test(rest);
-  return `<div class="sheet-bar"><span>${form ? '<button type="button" class="link" data-act="close">Cancel</button>' : ''}</span><b tabindex="-1">${m[1]}</b><span>${form ? '' : '<button type="button" class="link strong" data-act="close">Done</button>'}</span></div>${rest}`;
+  // B47: one Cancel, at the top; a sheet opened from Manage goes back there instead
+  const left = !form ? '' : /data-back="manage"/.test(rest) ? '<button type="button" class="link" data-act="manage">‹ Back</button>' : '<button type="button" class="link" data-act="close">Cancel</button>';
+  return `<div class="sheet-bar"><span>${left}</span><b tabindex="-1">${m[1]}</b><span>${form ? '' : '<button type="button" class="link strong" data-act="close">Done</button>'}</span></div>${rest}`;
 }
 export function sheet(html, refresh = null) {
   html = chrome(html); if (refresh) { const r = refresh; refresh = () => chrome(r()); }

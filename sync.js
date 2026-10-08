@@ -128,6 +128,8 @@ export async function createVaultFlow(pass, remember) {
   cloud.meta = { fileId: res.id, salt, iter: 310000, remoteModified: res.modifiedTime, lastSync: new Date().toISOString(), owner: true };
   cloud.key = key; cloud.dirty = false; await saveCloudMeta();
   if (remember) await kvSet('cloudKey', key);
+  // B46: with App lock on, keep the new vault's key inside the locked data too, so it is still there after a reload
+  if (lock.on) { lock.vaultRaw = await L.exportRaw(await C.deriveKey(pass, salt, undefined, true)); scheduleSeal(); }
 }
 // Unlock an existing vault (yours on another device, or one shared with you) and merge it into this device.
 export async function unlockFlow(pass, remember) {

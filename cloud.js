@@ -28,8 +28,8 @@ export async function seal(obj, key, salt, iter = ITER) {
   return JSON.stringify({ app: 'finance-insights-vault', v: 1, kdf: 'PBKDF2-SHA256', iter, salt, iv: b64(iv), ct: b64(ct) });
 }
 export function vaultHeader(text) {
-  const v = JSON.parse(text);
-  if (v.app !== 'finance-insights-vault') throw new Error('This Drive file is not a vault from this app.');
+  let v; try { v = JSON.parse(text); } catch { throw Object.assign(new Error('This Drive file is not a vault from this app (it could not be read).'), { code: 'not-a-vault' }); }
+  if (v.app !== 'finance-insights-vault') throw Object.assign(new Error('This Drive file is not a vault from this app.'), { code: 'not-a-vault' });
   return v;
 }
 export async function unseal(text, key) {
@@ -37,7 +37,7 @@ export async function unseal(text, key) {
   try {
     const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(v.iv) }, key, unb64(v.ct));
     return JSON.parse(dec.decode(pt));
-  } catch { throw new Error("That passphrase doesn't open this vault."); }
+  } catch { throw Object.assign(new Error("That passphrase doesn't open this vault. Check it letter by letter; it is case-sensitive."), { code: 'passphrase' }); }
 }
 
 // ---------- Google sign-in (redirect flow, no pop-ups) ----------
@@ -77,10 +77,14 @@ export async function signInWindow(clientId) {
 
 // ---------- Drive ----------
 async function api(token, url, opts = {}) {
-  const r = await fetch(url, { ...opts, headers: { Authorization: `Bearer ${token}`, ...(opts.headers || {}) } });
-  if (r.status === 401) throw Object.assign(new Error('Google sign-in has expired.'), { code: 401 });
-  if (r.status === 404) throw Object.assign(new Error('The vault file was not found in Google Drive (deleted, or no longer shared with you).'), { code: 404 });
-  if (!r.ok) throw new Error(`Google Drive answered with error ${r.status}.`);
+  let r;
+  try { r = await fetch(url, { ...opts, headers: { Authorization: `Bearer ${token}`, ...(opts.headers || {}) } }); }
+  catch { throw Object.assign(new Error('Google Drive could not be reached. Check the internet connection and try again.'), { code: 'network' }); }
+  // B11: say exactly why connecting failed
+  if (r.status === 401) throw Object.assign(new Error('Google sign-in has expired. Sign in with Google again.'), { code: 401 });
+  if (r.status === 403) throw Object.assign(new Error('This Google account has no access to the vault file. The owner needs to share finance-vault.json with this account as Editor, then you open it again with "Open a shared vault".'), { code: 403 });
+  if (r.status === 404) throw Object.assign(new Error('The vault file was not found in Google Drive (deleted, or no longer shared with this account).'), { code: 404 });
+  if (!r.ok) throw Object.assign(new Error(`Google Drive answered with error ${r.status}.`), { code: r.status });
   return r;
 }
 const DRIVE = 'https://www.googleapis.com/drive/v3/files';

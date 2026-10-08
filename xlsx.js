@@ -201,12 +201,14 @@ export function buildWorkbook(agg, recon, settings) {
 
   bar('MONTHLY SAVINGS SUMMARY');
   const xref = (sheet, row, offset) => (c) => `'${sheet}'!${colL(c + offset)}${row}`;
-  const put = (label, vals, fn, style = [S.bold, S.boldNum]) => {
+  const put = (label, vals, fn, style = [S.bold, S.boldNum], total = null) => {
     is.set(0, r, label, style[0]);
     months.forEach((m, i) => { const c = vFirst + i * 2; is.set(c, r, r2(vals[i]), style[1], fn(c)); is.set(c + 1, r, '', style[0]); });
     const t = vFirst + months.length * 2;
     const refs = months.map((_, i) => `${colL(vFirst + i * 2)}${r}`);
-    is.set(t, r, r2(vals.reduce((a2, b2) => a2 + b2, 0)), style[1], refs.length ? `SUM(${refs.join(',')})` : null);
+    // B44: savings rows are netted once over the whole time in the Total column (a formula of the totals), not added up month by month
+    if (total) is.set(t, r, r2(total.v), style[1], total.f(t));
+    else is.set(t, r, r2(vals.reduce((a2, b2) => a2 + b2, 0)), style[1], refs.length ? `SUM(${refs.join(',')})` : null);
     return r++;
   };
   const S_ = (k) => agg.summary.map((x) => x[k]);
@@ -223,11 +225,16 @@ export function buildWorkbook(agg, recon, settings) {
   months.forEach((m, i) => { const c = vFirst + i * 2; const x = agg.summary[i]; is.set(c, r, x.earned ? Math.round(x.saved / x.earned * 1000) / 1000 : 0, S.pct, `IF(${colL(c)}${rowEarned}=0,0,${colL(c)}${rowSav}/${colL(c)}${rowEarned})`); is.set(c + 1, r, '', S.totLbl); });
   r += 2;
   is.set(0, r++, 'Where the saved money went', S.bold);
-  const net = (c) => `(${colL(c)}${toB.row}-${colL(c)}${fromB.row})`; const kept = (c) => `(${colL(c)}${rowSav}-${net(c)})`;
-  put('Net moved to savings (moved − top-ups)', S_('movedIn'), (c) => `MAX(0,${net(c)})`, [S.text, S.num]);
-  if (agg.summary.some((s) => s.takenBack)) put('Taken back from savings, net', S_('takenBack'), (c) => `MAX(0,-${net(c)})`, [S.text, S.num]);
-  put('Kept in this account', S_('keptIn'), (c) => `MAX(0,${kept(c)})`, [S.text, S.num]);
-  if (agg.summary.some((s) => s.fromBalance)) put("From the account's earlier balance", S_('fromBalance'), (c) => `MAX(0,-${kept(c)})`, [S.text, S.num]);
+  // B45: bookings still in Review are part of the real balance change, so "Kept" includes them
+  const tot = (k) => agg.summary.reduce((a2, x) => a2 + x[k], 0);
+  const hasU = agg.summary.some((x) => Math.abs(x.unassigned) > 0.004);
+  const rowU = hasU ? put('Bookings still in Review (net)', S_('unassigned'), () => null, [S.text, S.num]) : null;
+  const net = (c) => `(${colL(c)}${toB.row}-${colL(c)}${fromB.row})`; const kept = (c) => `(${colL(c)}${rowSav}-${net(c)}${rowU ? `+${colL(c)}${rowU}` : ''})`;
+  const nT = tot('netToSav'), kT = tot('kept');
+  put('Net moved to savings (moved − top-ups)', S_('movedIn'), (c) => `MAX(0,${net(c)})`, [S.text, S.num], { v: Math.max(0, nT), f: (c) => `MAX(0,${net(c)})` });
+  if (agg.summary.some((s) => s.takenBack) || nT < 0) put('Taken back from savings, net', S_('takenBack'), (c) => `MAX(0,-${net(c)})`, [S.text, S.num], { v: Math.max(0, -nT), f: (c) => `MAX(0,-${net(c)})` });
+  put('Kept in this account', S_('keptIn'), (c) => `MAX(0,${kept(c)})`, [S.text, S.num], { v: Math.max(0, kT), f: (c) => `MAX(0,${kept(c)})` });
+  if (agg.summary.some((s) => s.fromBalance) || kT < 0) put("From the account's earlier balance", S_('fromBalance'), (c) => `MAX(0,-${kept(c)})`, [S.text, S.num], { v: Math.max(0, -kT), f: (c) => `MAX(0,-${kept(c)})` });
   r += 1;
   is.set(0, r++, 'Saved = Earned income − Total spent − Sent to India from your own money.', S.legend);
   is.set(0, r++, 'Transfers to and from your savings account are internal: they show where savings went, not income or cost.', S.legend);

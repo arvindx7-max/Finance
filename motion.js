@@ -27,13 +27,16 @@ const SEL = '[aria-selected="true"], [aria-pressed="true"]';
 const vertical = () => matchMedia('(min-width: 960px)').matches; // the Mac sidebar runs top to bottom
 function pillBox(btn) { return { x: btn.offsetLeft + (vertical() ? 0 : 4), y: btn.offsetTop + (vertical() ? 0 : 2), w: btn.offsetWidth - (vertical() ? 0 : 8), h: btn.offsetHeight - (vertical() ? 0 : 4) }; }
 const pillTf = (b, s = 1) => `translate3d(${b.x}px,${b.y}px,0) ${vertical() ? `scaleY(${s})` : `scaleX(${s})`}`;
+const visible = (btn) => !!btn && btn.offsetParent !== null && btn.offsetWidth > 0; // v19: Settings is not in the phone's tab bar
 export function placePill() {
-  const pill = $('.tabbar .pill'); const cur = $('.tabbar [aria-current="page"]'); if (!pill || !cur) return;
+  const pill = $('.tabbar .pill'); const cur = $('.tabbar [aria-current="page"]'); if (!pill) return;
   pill.getAnimations().forEach((a) => a.cancel());
+  pill.style.opacity = visible(cur) ? '' : '0'; if (!visible(cur)) return;
   const b = pillBox(cur); pill.style.width = `${b.w}px`; pill.style.height = `${b.h}px`; pill.style.transform = pillTf(b);
 }
 function movePill(fromBtn, toBtn) {
   const pill = $('.tabbar .pill'); if (!pill) return;
+  if (!visible(fromBtn) || !visible(toBtn)) { placePill(); return; }
   const a = pillBox(fromBtn), b = pillBox(toBtn);
   pill.getAnimations().forEach((x) => x.cancel());
   pill.style.width = `${b.w}px`; pill.style.height = `${b.h}px`; pill.style.transform = pillTf(b);
@@ -78,7 +81,7 @@ function animateIcon(btn, tab) {
 function crossFadeTitle(main, oldText) {
   const h1 = $('.topbar h1', main); if (!h1 || !oldText || h1.textContent === oldText) return;
   const old = document.createElement('span'); old.className = 'ttl-old'; old.setAttribute('aria-hidden', 'true'); old.textContent = oldText;
-  const nu = document.createElement('span'); nu.textContent = h1.textContent; h1.textContent = ''; h1.append(nu, old);
+  const nu = document.createElement('span'); while (h1.firstChild) nu.appendChild(h1.firstChild); h1.append(nu, old); // keeps the subtitle (I51)
   old.animate([{ opacity: 1 }, { opacity: 0 }], { duration: D(160), fill: 'forwards' }).onfinish = () => old.remove();
   nu.animate([{ opacity: 0 }, { opacity: 1 }], { duration: D(220), delay: D(60), fill: 'backwards' });
 }

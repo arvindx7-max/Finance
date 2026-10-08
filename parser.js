@@ -110,7 +110,7 @@ export function parseCsv(text) {
     if (!l.trim()) continue;
     const f = splitCsvLine(l);
     if (/^Kontostand/.test(f[0])) {
-      const amt = f.slice(1).find((x) => /^-?[\d.]+,\d\d$/.test(x));
+      const amt = f.slice(1).find((x) => /^[+-]?[\d.]+,\d\d$/.test(x)); // B38: a leading "+" is fine too
       footer = { date: isoFromDE(f[1]), balance: amt ? deNum(amt) : null };
       continue;
     }
