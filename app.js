@@ -8,13 +8,32 @@ import { change, fresh, load, recompute, state, txById, undo } from './state.js'
 import { cfg, chooseVault, cloud, createVaultFlow, loadCloud, refreshStatus, saveCloudMeta, syncNow, unlockFlow } from './sync.js';
 import { BIO, ask, dialogDone, disableLock, enableLock, lockFallback, unlockApp } from './security.js';
 import { exportBackup, exportExcel, exportRules, importFiles } from './io.js';
-import { addUserRule, applyTheme, assign, budgetSheet, createLine, currentTheme, drillSheet, goalSheet, isDark, manageSheet, monthsIn, newLineSheet, oneTimeSheet, periodLabel, render, ruleMatches, ruleSheetHtml, savBalSheet, searchHits, searchResults, takePendingNew, txList } from './views.js';
+import { addUserRule, applyTheme, assign, budgetSheet, createLine, currentTheme, drillSheet, forgetView, goalSheet, isDark, manageSheet, monthsIn, newLineSheet, oneTimeSheet, overviewSheet, periodLabel, render, ruleMatches, ruleSheetHtml, savBalSheet, searchHits, searchResults, takePendingNew, txList } from './views.js';
 // ---------------- events ----------------
+// B40: no pinch zoom (iPhone and Mac Safari send gesture events; other browsers send ctrl + wheel).
+['gesturestart', 'gesturechange'].forEach((ev) => document.addEventListener(ev, (e) => e.preventDefault(), { passive: false }));
+document.addEventListener('wheel', (e) => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
+document.addEventListener('touchmove', (e) => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
+const TAB_LABEL = { overview: 'Overview', months: 'Months', insights: 'Insights', review: 'Review', data: 'Data' };
+// Open Months at a section (and month), remembering where we came from for the "‹ back" link.
+function goMonths(section, month) {
+  if (state.tab !== 'months') state.back = { tab: state.tab, label: TAB_LABEL[state.tab], y: window.scrollY };
+  state.tab = 'months'; state.section = section; state.focusMonth = month || null;
+  forgetView(); render(); window.scrollTo(0, 0);
+}
 document.addEventListener('click', async (e) => {
   const b = e.target.closest('button, [data-section], [data-cell], [data-drill], [data-pjump], [data-gosec]');
   if (!b) return;
   const ds = b.dataset;
-  if (ds.tab) { closeSheet(); state.tab = ds.tab; render(); window.scrollTo(0, 0); return; }
+  if (ds.tab) {
+    closeSheet();
+    if (ds.tab === state.tab) { // already here: back to the start of this tab
+      if (state.tab === 'months') state.focusMonth = null;
+      if (state.tab === 'overview' || state.tab === 'insights') { const ms = state.agg.months; state.period = { mode: 'month', key: ms[ms.length - 1] }; }
+      forgetView();
+    }
+    state.back = null; state.tab = ds.tab; render(); window.scrollTo(0, 0); return;
+  }
   if (ds.pmode) { state.period.mode = ds.pmode; state.period.key = null; render(); return; }
   if (ds.pkey) { state.period.key = ds.pkey; render(); return; }
   if (ds.themeset) { applyTheme(ds.themeset); render(); return; }
@@ -28,16 +47,15 @@ document.addEventListener('click', async (e) => {
   if (ds.dlg) { if (dialogDone) { const inp = $('#dlg-in'); dialogDone(ds.dlg === 'ok' ? (inp ? inp.value : true) : null); } return; }
   if (ds.pjump) { const i = ds.pjump.indexOf('|'); state.period = { mode: ds.pjump.slice(0, i), key: ds.pjump.slice(i + 1) }; render(); return; }
   if (ds.delrule) { const i = ds.delrule.lastIndexOf('|'); const kw = ds.delrule.slice(0, i), sg = ds.delrule.slice(i + 1); await change(`Rule "${kw}" removed`, (s) => { s.profile.rules = s.profile.rules.filter((r) => !(r.mine && r.label === kw && (r.sign || '') === sg)); }); return; }
-  if (ds.mkey) { state.mkey = ds.mkey; render(); return; }
-  if (ds.gosec) { state.tab = 'months'; state.section = ds.gosec; if (state.period.mode === 'month') state.mkey = state.period.key; render(); window.scrollTo(0, 0); return; }
+  if (ds.gosec) { goMonths(ds.gosec, state.period.mode === 'month' ? state.period.key : null); return; }
   if (ds.drill) {
     const i = ds.drill.lastIndexOf('|'); const g = ds.drill.slice(0, i), key = ds.drill.slice(i + 1); const mode = state.period.mode === 'all' ? 'month' : state.period.mode; const ms = monthsIn(key, mode);
-    drillSheet(`${g}, ${periodLabel(key, mode)}`, state.agg.rows.filter((t) => t.line && ms.includes(monthOf(t.date)) && lineMeta(t.line).sec === 'variable' && (lineMeta(t.line).group || 'Other') === g).map((t) => t.id));
+    overviewSheet(`${g}, ${periodLabel(key, mode)}`, state.agg.rows.filter((t) => t.line && ms.includes(monthOf(t.date)) && lineMeta(t.line).sec === 'variable' && (lineMeta(t.line).group || 'Other') === g).map((t) => t.id), { section: 'variable', month: ms[ms.length - 1] });
     return;
   }
   if (ds.vendor) {
     const ms = monthsIn(state.period.key, state.period.mode);
-    drillSheet(`${ds.vendor}, ${periodLabel(state.period.key, state.period.mode)}`, state.agg.rows.filter((t) => t.vendor === ds.vendor && ms.includes(monthOf(t.date)) && t.line && lineMeta(t.line).sec === 'variable').map((t) => t.id));
+    overviewSheet(`${ds.vendor}, ${periodLabel(state.period.key, state.period.mode)}`, state.agg.rows.filter((t) => t.vendor === ds.vendor && ms.includes(monthOf(t.date)) && t.line && lineMeta(t.line).sec === 'variable').map((t) => t.id), { section: 'variable', month: ms[ms.length - 1] });
     return;
   }
   if (ds.tx) { const id = ds.tx; const html = () => { const t = txById(id); return `<h2>${h(t.vendor)}</h2>${txList([t])}<button class="btn" data-act="close">Done</button>`; }; sheet(html(), html); return; }
@@ -68,7 +86,9 @@ document.addEventListener('click', async (e) => {
   else if (act === 'exportrules') await exportRules();
   else if (act === 'manage') manageSheet();
   else if (act === 'newrule') sheet(ruleSheetHtml());
-  else if (act === 'search') { closeSheet(); state.tab = 'months'; state.section = 'search'; render(); window.scrollTo(0, 0); const q = $('#q'); if (q) q.focus(); }
+  else if (act === 'search') { closeSheet(); if (state.tab !== 'months') state.back = { tab: state.tab, label: TAB_LABEL[state.tab] }; state.tab = 'months'; state.section = 'search'; render(); window.scrollTo(0, 0); const q = $('#q'); if (q) q.focus(); }
+  else if (act === 'back') { const bk = state.back; state.back = null; if (bk) { state.tab = bk.tab; render(); window.scrollTo(0, bk.y || 0); } }
+  else if (act === 'editmonths') { closeSheet(); goMonths(b.dataset.sec, b.dataset.month); }
   else if (act === 'unlockapp') await unlockApp();
   else if (act === 'lockfallback') await lockFallback();
   else if (act === 'lockoff') { if (await ask({ title: 'Turn off app lock?', text: `The data on this device will no longer be encrypted with ${BIO}; your device's own lock still protects it.`, ok: 'Turn off', danger: true })) { await disableLock(); render(); toast('App lock is off'); } }

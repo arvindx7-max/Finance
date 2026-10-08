@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -360,6 +360,26 @@ details.more > summary { padding: 10px 14px; font-size: 13px; color: var(--indig
 
 .grid tr.bar th span { display: inline-flex; align-items: center; gap: 10px; } .grid .tl { display: inline-flex; align-items: center; gap: 10px; }
 .grid tr.bar .spark polyline, .grid .tl .spark polyline { stroke-width: 1.4; }
+
+/* ---------- v17.1 ---------- */
+/* B40: no double-tap zoom; pinch is blocked in app.js */
+html { touch-action: manipulation; -webkit-text-size-adjust: 100%; }
+/* B41: iOS zooms into fields smaller than 16 px */
+@media (max-width: 959px) { input, select, textarea, .frow select, .frow input[type=text] { font-size: 16px !important; } }
+/* B39: back link */
+.backlink { display: block; border: 0; background: none; color: var(--indigo); font: 600 16px var(--text); padding: 10px 16px 0; cursor: pointer; }
+/* B42: overspent ring, whole ring light red */
+.ring.neg .val { stroke: var(--coral); opacity: .35; }
+/* I43: category subtotal rows */
+.grid tr.sub th, .grid tr.sub td { background: var(--raised); font-weight: 700; color: var(--indigo); }
+.grid tr.sub td { font-family: var(--num); }
+.grid tr.sub .tl { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* I44: read-only booking list */
+.ro { list-style: none; margin: 0 0 8px; padding: 0; }
+.ro li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.ro li small { display: block; color: var(--muted); font-size: 13px; }
+.ro li b.num { font-family: var(--num); white-space: nowrap; }
+.link.editin { display: block; margin: 6px 0 12px; font-weight: 700; }
 
 /* ---------- navigation ---------- */
 .tabbar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-around; background: color-mix(in srgb, var(--surface) 86%, transparent); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); border-top: 1px solid var(--line); padding: 6px 4px calc(6px + env(safe-area-inset-bottom)); z-index: 5; }
