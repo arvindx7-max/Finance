@@ -129,6 +129,7 @@ document.addEventListener('click', async (e) => {
   else if (act === 'pickrules') pickRulesFile();
   else if (act === 'ldmovego') { if (ld.sel.size) { ld.moving = true; sheet(lineHtml(), lineHtml); } }
   else if (act === 'ldback') lineBack();
+  else if (act === 'ldall') { ld.all = true; sheet(lineHtml(), lineHtml); }
   else if (act === 'manage') manageSheet();
   else if (act === 'newrule') sheet(ruleSheetHtml());
   else if (act === 'settings') { closeSheet(); state.back = { tab: state.tab, label: TAB_LABEL[state.tab], y: window.scrollY }; state.tab = 'settings'; render(); window.scrollTo(0, 0); } // I50: the gear on the phone

@@ -200,6 +200,10 @@ input[type=month], input[type=date], input[name=name], select { font: inherit; f
 .tripform input:not([type=checkbox]), input[type=date], input[type=month] { min-width: 0; max-width: 100%; box-sizing: border-box; }
 .tripform input:not([type=checkbox]) { width: 100%; }
 .tripform .btn { width: 100%; }
+.tripform input[type=date] { display: block; width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; }
+@media (max-width: 480px) { .tripform input[type=date] { padding-left: 8px; padding-right: 8px; } }
+.ld-list li.notick { grid-template-columns: 1fr auto; }
+.ld-all { width: 100%; margin-top: 8px; }
 .trips { list-style: none; padding: 0; margin: 0 0 10px; }
 .trips li { display: flex; gap: 10px; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
 .trips small, .manage small { display: block; color: var(--muted); font-size: 12px; }
@@ -490,7 +494,6 @@ html[data-motion="reduced"] #sheet.open #sheet-body { opacity: 1; }
 .sugg .lbl { display: block; font-size: 12px; font-weight: 650; color: var(--muted); margin-bottom: 6px; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chips button { font: inherit; font-size: 15px; font-weight: 650; padding: 9px 14px; min-height: 40px; border-radius: 999px; border: 1px solid var(--line); background: var(--raised); color: var(--ink); cursor: pointer; }
-.chips button:first-child { background: var(--chip); color: var(--chip-ink); border-color: transparent; }
 .done-row { display: flex; align-items: center; gap: 12px; padding: 4px 0; }
 .done-row .ok { flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--lagoon-soft); color: var(--lagoon); display: grid; place-items: center; font-weight: 800; font-style: normal; }
 .done-row span { flex: 1; min-width: 0; font-size: 15px; }

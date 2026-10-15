@@ -208,4 +208,34 @@ for (const [dn, vp] of [['iPhone', PHONE], ['Mac', MAC]]) {
   ok(`${N} no errors`, p.errs.length === 0, p.errs.join('; '));
   await p.context().close();
 }
+// ---------- second Gemini review: B59, trip lines, long lists, Mac Data layout, equal chips ----------
+for (const [dn, vp] of [['iPhone', PHONE], ['Mac', MAC]]) {
+  const p = await open(b, port, vp); const N = `${dn}:`;
+  await tabTo(p, 'review', vp);
+  const st = await p.$$eval('.chips button', (bs) => bs.map((x) => getComputedStyle(x).backgroundColor));
+  ok(`${N} I68 all suggestions look the same (none is shown as the answer)`, st.length > 1 && st.every((c) => c === st[0]), JSON.stringify(st));
+  await p.click('.sugg [data-suggest]'); await p.waitForTimeout(400);
+  await p.click('#toast [data-act=undo]'); await p.waitForTimeout(400);
+  const u = await p.evaluate(() => ({ review: window.__app.state.agg.review.length, rows: document.querySelectorAll('.done-row').length, count: document.querySelector('.rv-count')?.textContent || null }));
+  ok(`${N} B59 Undo in the toast also removes the answered row`, u.review === 1 && u.rows === 0 && u.count === null, JSON.stringify(u));
+  // trip line: no ticks, no move, a note instead
+  await p.evaluate(() => { const s = window.__app.state.settings; s.trips = [{ name: 'Test Trip', from: '2026-08-01', to: '2026-08-15', scope: 'all' }]; window.__app.refresh(); });
+  await tabTo(p, 'months', vp); await p.click('[data-section=variable]'); await p.waitForTimeout(250);
+  await p.click('[data-line^="trip:"]'); await p.waitForSelector('#sheet:not([hidden]) .ld-list');
+  ok(`${N} Gemini-1 a trip line cannot move bookings and says why`, !(await p.$('#sheet [data-ldtick], #sheet #ld-move')) && /follow the trip dates/.test(await p.textContent('#sheet')));
+  await p.keyboard.press('Escape'); await p.waitForTimeout(200);
+  // long line: 20 most recent first, then "Show all"
+  await p.evaluate(() => { const st = window.__app.state; st.settings.trips = []; const base = st.tx.find((t) => t.vendor === 'Test Supermarket'); for (let i = 0; i < 21; i++) st.tx.push({ ...base, id: `${base.id}|extra${i}` }); window.__app.refresh(); });
+  await p.click('[data-line="v.otherGrocery"]'); await p.waitForSelector('#sheet:not([hidden]) .ld-list');
+  const total = await p.evaluate(() => window.__app.state.agg.rows.filter((t) => t.line === 'v.otherGrocery').length);
+  const li = () => p.$$eval('#sheet .ld-list li:not(.ld-month)', (x) => x.length);
+  ok(`${N} Gemini long lists show the 20 most recent bookings first`, (await li()) === 20 && new RegExp(`Show all ${total} bookings`).test(await p.textContent('#sheet .ld-all')), String(await li()));
+  await p.click('#sheet .ld-all'); await p.waitForTimeout(200);
+  ok(`${N} Gemini "Show all" lists every booking`, (await li()) === total && !(await p.$('#sheet .ld-all')));
+  await p.keyboard.press('Escape'); await p.waitForTimeout(200);
+  await tabTo(p, 'data', vp);
+  ok(`${N} Gemini Add statements spans the full width on the Mac`, await p.evaluate(() => document.querySelector('.data-grid .card').classList.contains('wide')));
+  ok(`${N} no errors`, p.errs.length === 0, p.errs.join('; '));
+  await p.context().close();
+}
 await b.close(); done();

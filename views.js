@@ -499,9 +499,10 @@ export function searchResults() {
 
 // ---------------- line detail (v20, I69) ----------------
 // Tap a line name in Months: one sheet with that line over time. Bookings are moved by ticking them; never all at once.
-export const ld = { line: null, month: null, sel: new Set(), moving: false };
+export const ld = { line: null, month: null, sel: new Set(), moving: false, all: false };
+const LD_CAP = 20; // long lines show the 20 most recent bookings first
 const ldSign = (sec) => (['income', 'passthrough', 'fromsav'].includes(sec) ? 1 : -1);
-export function lineSheet(id) { ld.line = id; ld.month = null; ld.sel = new Set(); ld.moving = false; sheet(lineHtml(), lineHtml); }
+export function lineSheet(id) { ld.line = id; ld.month = null; ld.all = false; ld.sel = new Set(); ld.moving = false; sheet(lineHtml(), lineHtml); }
 export function lineBack() { ld.moving = false; sheet(lineHtml(), lineHtml); }
 export function lineHtml() {
   const a = state.agg; const meta = lineMeta(ld.line);
@@ -518,19 +519,21 @@ export function lineHtml() {
   const shown = rows.filter((t) => !sel || monthOf(t.date) === sel).sort((x, y) => y.date.localeCompare(x.date));
   const diff = Math.round((last - avg) * 100) / 100;
   const own = meta.id.startsWith('c.');
+  const trip = meta.id.startsWith('trip:'); // trip lines follow the trip dates: their bookings cannot be moved from here
+  const listed = ld.all ? shown : shown.slice(0, LD_CAP);
   if (ld.moving) {
     const n = ld.sel.size;
     return `<h2>Move ${n} booking${n === 1 ? '' : 's'}</h2><p class="fine">From ${h(meta.label)} to the line you choose. ${n === 1 ? 'Only the booking you ticked moves.' : `Only the ${n} bookings you ticked move.`} You can undo this right after.</p>
     <form class="stack" data-act="ldmove" data-back="line"><label>Move to<select name="line" required><option value="">Choose a line…</option>${lineOptions('').replace('<optgroup label="Something else"><option value="__new">＋ New line…</option></optgroup>', '')}</select></label>
     <button class="btn primary">Move ${n} booking${n === 1 ? '' : 's'}</button></form>`;
   }
-  const byMonth = {}; for (const t of shown) (byMonth[monthOf(t.date)] ||= []).push(t);
+  const byMonth = {}; for (const t of listed) (byMonth[monthOf(t.date)] ||= []).push(t);
   return `<h2>${h(meta.label)}</h2><p class="ld-sub">${h(SECTIONS[meta.sec] || '')}${meta.group ? ` · ${h(meta.group)}` : ''} · ${rows.length} booking${rows.length === 1 ? '' : 's'}</p>
   ${rows.length ? `<div class="ld-bars" role="group" aria-label="Amount per month">${months.map((m, i) => `<button class="${m === sel ? 'on' : ''}" data-ldmonth="${m}" aria-pressed="${m === sel}" aria-label="${h(monthLabel(m))}: ${eur(sums[i])}"><i style="height:${Math.max(2, Math.abs(sums[i]) / max * 100).toFixed(0)}%"></i>${h(monthLabel(m, true))}</button>`).join('')}</div>
   <div class="ld-stats"><div><b>${eur(avg)}</b><span>Average per month</span></div><div><b>${eur(hi)}</b><span>Highest: ${h(monthLabel(hiM, true))}</span></div><div><b>${eur(last)}</b><span>${h(monthLabel(lastM, true))}, ${Math.abs(diff) < 0.005 ? 'same as average' : `${diff > 0 ? '+' : '−'}${eur(Math.abs(diff))} vs average`}</span></div></div>
   <div class="ld-head"><h3>${sel ? `${h(monthLabel(sel))} · ${shown.length} booking${shown.length === 1 ? '' : 's'}` : `All months · ${shown.length} booking${shown.length === 1 ? '' : 's'}`}</h3>${sel ? '<button class="link" data-ldmonth="">Show all months</button>' : ''}</div>
-  <ul class="ld-list">${Object.entries(byMonth).map(([m, ts]) => `${sel ? '' : `<li class="ld-month"><h4>${h(monthLabel(m))}</h4></li>`}${ts.map((t) => `<li><input type="checkbox" data-ldtick="${h(t.id)}" aria-label="Select ${h(t.vendor)}, ${deDate(t.date)}"${ld.sel.has(t.id) ? ' checked' : ''}><div><b>${h(t.vendor)}</b><span>${deDate(t.date)}</span></div><strong>${eur(sign * t.amount)}</strong></li>`).join('')}`).join('')}</ul>` : '<p class="fine">No bookings on this line yet.</p>'}
-  <div class="ld-actions"><button class="btn primary" id="ld-move" data-act="ldmovego"${ld.sel.size ? '' : ' disabled'}>${ld.sel.size ? `Move ${ld.sel.size} booking${ld.sel.size === 1 ? '' : 's'}…` : 'Tick bookings to move them'}</button>${own ? `<button class="btn" data-renline="${h(meta.id)}">Rename</button>` : ''}<button class="btn" data-act="close">Close</button></div>`;
+  <ul class="ld-list">${Object.entries(byMonth).map(([m, ts]) => `${sel ? '' : `<li class="ld-month"><h4>${h(monthLabel(m))}</h4></li>`}${ts.map((t) => `<li${trip ? ' class="notick"' : ''}>${trip ? '' : `<input type="checkbox" data-ldtick="${h(t.id)}" aria-label="Select ${h(t.vendor)}, ${deDate(t.date)}"${ld.sel.has(t.id) ? ' checked' : ''}>`}<div><b>${h(t.vendor)}</b><span>${deDate(t.date)}</span></div><strong>${eur(sign * t.amount)}</strong></li>`).join('')}`).join('')}</ul>${listed.length < shown.length ? `<button class="btn ld-all" data-act="ldall">Show all ${shown.length} bookings</button>` : ''}` : '<p class="fine">No bookings on this line yet.</p>'}
+  ${trip ? '<p class="fine">Trip lines follow the trip dates in Settings, so their bookings are not moved from here.</p>' : ''}<div class="ld-actions">${trip ? '' : `<button class="btn primary" id="ld-move" data-act="ldmovego"${ld.sel.size ? '' : ' disabled'}>${ld.sel.size ? `Move ${ld.sel.size} booking${ld.sel.size === 1 ? '' : 's'}…` : 'Tick bookings to move them'}</button>`}${own ? `<button class="btn" data-renline="${h(meta.id)}">Rename</button>` : ''}<button class="btn" data-act="close">Close</button></div>`;
 }
 
 // ---------------- picking a line ----------------
@@ -563,7 +566,7 @@ export async function assign(txId, lineId, allFromVendor) {
   await change(`Moved to ${lineLabel(lineId)}${allFromVendor ? `, for every booking from ${t.vendor}` : ''}`, (s) => {
     if (allFromVendor) { s.vendorRules[t.vkey] = lineId; delete s.txRules[t.id]; } else s.txRules[t.id] = lineId;
     // I68: the answered booking shrinks to one line (with Undo) instead of the page jumping on
-    if (inReview) state.reviewDone = [...state.reviewDone.filter((d) => d.vkey !== t.vkey), { vkey: t.vkey, txId: t.id, vendor: t.vendor, label: lineLabel(lineId), all: !!allFromVendor }];
+    if (inReview) state.reviewDone = [...state.reviewDone.filter((d) => d.vkey !== t.vkey), { vkey: t.vkey, txId: t.id, line: lineId, vendor: t.vendor, label: lineLabel(lineId), all: !!allFromVendor }];
   });
 }
 // I68: undo one Review answer from its own row (independent of the order of other answers)
@@ -572,6 +575,8 @@ export async function undoReviewAnswer(i) {
   state.reviewDone = state.reviewDone.filter((_, k) => k !== i);
   await change('Answer undone', (s) => { if (d.all) delete s.vendorRules[d.vkey]; else delete s.txRules[d.txId]; });
 }
+// B59: an answered row only stays while its answer exists (undone by the toast, the row or Manage: the row goes too).
+const answerLives = (d) => (d.all ? (state.settings.vendorRules || {})[d.vkey] : (state.settings.txRules || {})[d.txId]) === d.line;
 function answeredRows() {
   return state.reviewDone.map((d, i) => `<section class="card answered"><div class="done-row" role="status"><i class="ok" aria-hidden="true">✓</i><span><b>${h(d.vendor)}</b> → ${h(d.label)}<small>${d.all ? `Also every future booking from ${h(d.vendor)}` : 'This booking only'}</small></span><button class="link" data-reviewundo="${i}">Undo</button></div></section>`).join('');
 }
@@ -622,6 +627,7 @@ export function rulesFileNotice() {
   return text ? `<button class="seal bad" data-act="pickrules">${text}</button>` : '';
 }
 export function reviewView() {
+  state.reviewDone = state.reviewDone.filter(answerLives); // B59
   const byNewest = (x, y) => y.date.localeCompare(x.date);
   const r = [...state.agg.review].sort(byNewest); const f = [...state.agg.flags].sort(byNewest); const pf = [...state.agg.passFlags].sort(byNewest);
   const passHtml = pf.length ? `<section class="pad"><h1 class="h1">Forwarded abroad?</h1><p class="fine">Money came in from your savings account in a month when you also sent money abroad. If you passed it on, it is not a top-up and does not reduce your savings.</p></section>
@@ -655,7 +661,7 @@ export function dataView() {
   const s = state.settings; const d = daysSince(state.lastBackup);
   const nAns = live(s.vendorRules).length + live(s.txRules).length;
   const own = (s.profile?.lines || []).filter((l) => l.id.startsWith('c.')).length;
-  return `${topbar('Data')}<div class="data-grid"><section class="card">
+  return `${topbar('Data')}<div class="data-grid"><section class="card wide">
     <h2>Add statements</h2>
     <p class="fine">PDF Kontoauszug or CSV export. Overlapping files are fine: bookings already stored are skipped.${WIDE.matches ? ' On the Mac you can also drop files anywhere on this window.' : ''}</p>
     <label class="btn primary">Choose files<input type="file" accept=".pdf,.csv,.json,application/pdf,text/csv,application/json" multiple data-act="import" hidden></label>

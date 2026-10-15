@@ -66,6 +66,7 @@ and never derive mock data from real data (no "slightly changed" real names, ven
 | Wrong passphrase (tests) | `wrong-passphrase` |
 | Technical test values | `token_test` (sign-in token), `file_test` (vault file id), `notes.txt` (a file type the app must reject) |
 | Statement files for other months | `statement_test_2026-MM.csv` for any month in the tracking range |
+| Trip name | `Test Trip` |
 | Demo mode data | Built only from the vendors, amounts and dates above (1st and 15th, `2026-03` to `2026-09`); no new values |
 
 If a test needs something the ledger does not cover, add a clearly fake value to this table in the same pull request
