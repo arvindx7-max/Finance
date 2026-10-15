@@ -25,13 +25,14 @@ export async function rawDel(k) { const d = await db(); return new Promise((res)
 export async function kvGet(k, def) { const d = await db(); return new Promise((res) => { const q = d.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => res(q.result ? q.result.v : def); q.onerror = () => res(def); }); }
 // With app lock on, bookings, statements, settings and the vault key never touch storage in the clear:
 // they live in memory and are written as one encrypted blob (see sealAll).
-export const lock = { on: false, key: null, meta: null, vaultRaw: null };
+export const lock = { on: false, key: null, meta: null, vaultRaw: null, demo: false }; // demo: made-up data is shown and nothing is written
 export const SEALED_KV = new Set(['settings', 'settingsBackup', 'undo', 'lastBackup', 'cloudKey']);
 export async function putMany(store, items) {
+  if (lock.demo) return; // demo changes are never kept
   if (lock.on && (store !== 'kv' || items.every((i) => SEALED_KV.has(i.k)))) { scheduleSeal(); return; }
   return rawPut(store, items);
 }
-export async function clear(store) { if (lock.on && store !== 'kv') { scheduleSeal(); return; } return rawClear(store); }
+export async function clear(store) { if (lock.demo) return; if (lock.on && store !== 'kv') { scheduleSeal(); return; } return rawClear(store); }
 export const kvSet = (k, v) => putMany('kv', [{ k, v }]);
 export let sealTimer;
 export function scheduleSeal() { clearTimeout(sealTimer); sealTimer = setTimeout(sealAll, 250); }

@@ -2,11 +2,11 @@
 import { parsePdf, parseCsv } from './parser.js';
 import { aggregate, reconcile, DEFAULT_SETTINGS, emptyProfile, lines, SECTIONS, USER_SECTIONS, lineLabel, lineMeta, monthLabel, deDate, monthOf } from './model.js';
 import { buildWorkbook } from './xlsx.js';
-import { $, eur, hideBusy, sheet, showBusy } from './util.js';
-import { clear, kvSet, putMany } from './storage.js';
-import { adopt, fresh, recompute, saveSettings, state } from './state.js';
+import { $, eur, hideBusy, sheet, showBusy, toast } from './util.js';
+import { clear, kvSet, lock, putMany } from './storage.js';
+import { adopt, fresh, pushUndo, recompute, saveSettings, state } from './state.js';
 import { live, markChanged, same, stampDiff } from './sync.js';
-import { DEVICE } from './security.js';
+import { DEVICE, ask } from './security.js';
 import { render, showImportReport } from './views.js';
 // ---------------- import ----------------
 export let pdfjs;
@@ -42,6 +42,7 @@ export function mergeRows(existing, incoming) {
 }
 
 export async function importFiles(files) {
+  if (lock.demo) { toast('Not available in the demo.'); return; }
   const report = { files: [], added: 0, dup: 0, errors: [] };
   // rules files first, so statements in the same batch are categorised with them
   files = [...files].sort((a, b) => (/\.json$/i.test(b.name) ? 1 : 0) - (/\.json$/i.test(a.name) ? 1 : 0));
@@ -51,7 +52,16 @@ export async function importFiles(files) {
       try {
         if (/\.json$/i.test(f.name)) {
           const j = JSON.parse(await f.text());
-          if (j.app === 'finance-insights-rules') { report.files.push(`${f.name}: ${await loadRules(j)}`); continue; }
+          // B58: loading a rules file or a backup replaces stored data, so it always asks first (file picker, notice and drop alike).
+          const isRules = j.app === 'finance-insights-rules';
+          if (!isRules && !(j.app === 'finance-insights' && Array.isArray(j.tx))) throw new Error('not a backup or rules file from this app');
+          hideBusy();
+          const yes = await ask(isRules
+            ? { title: 'Load this rules file?', text: `${f.name} replaces your rules and line names, and your trips and tracking start if the file has them. Your answers from Review and the lines you created are kept. You can undo this right after.`, ok: 'Load rules' }
+            : { title: 'Replace all bookings?', text: `${f.name} replaces all ${state.tx.length} bookings and statements on this ${DEVICE} with the ones in the backup. Your answers are merged. This cannot be undone: export a backup first if you are not sure.`, ok: 'Replace', danger: true });
+          showBusy(`Reading ${files.length} file${files.length > 1 ? 's' : ''}…`);
+          if (!yes) { report.files.push(`${f.name}: not loaded (you cancelled)`); continue; }
+          if (isRules) { report.files.push(`${f.name}: ${await loadRules(j)}`); report.undoable = true; continue; }
           report.files.push(`${f.name}: ${await restoreBackup(j)}`); continue;
         }
         let rows, statement = null, checkpoint = null;
@@ -81,6 +91,7 @@ export async function loadRules(j) {
   if (!Array.isArray(j.rules) || !Array.isArray(j.lines)) throw new Error('rules file is missing its "rules" or "lines" list');
   for (const r of j.rules) for (const p of [...(r.any || []), ...(r.all || []), ...(r.none || [])]) new RegExp(p, 'i'); // fail early on a bad pattern
   const { vendorAnswers = {}, bookingAnswers = {}, dismissed = {}, ...profile } = j;
+  await pushUndo(); // B58: loading a rules file can be undone
   const s = state.settings; const before = JSON.parse(JSON.stringify(s));
   // Keep what was made in the app (keyword rules, own lines) unless the file has the same item.
   const old = s.profile || {};

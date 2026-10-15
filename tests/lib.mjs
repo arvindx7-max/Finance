@@ -24,11 +24,16 @@ export const files = (dir) => {
   out.push({ name: 'rules_test.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(rulesFile())) });
   return out;
 };
+// B58: loading a rules file or a backup asks first; tests answer the question.
+export async function confirmDialog(p, accept = true) {
+  await p.waitForSelector('#dialog:not([hidden]) [data-dlg=ok]', { timeout: 10000 });
+  await p.click(accept ? '#dialog [data-dlg=ok]' : '#dialog [data-dlg=cancel]'); await p.waitForTimeout(200);
+}
 export async function open(b, port, vp, opts = {}) {
   const ctx = await b.newContext({ viewport: vp, deviceScaleFactor: 2, colorScheme: opts.scheme || 'light', acceptDownloads: true });
   const p = await ctx.newPage(); p.errs = []; p.on('pageerror', (e) => p.errs.push(e.message));
   await p.goto(`http://localhost:${port}/index.html`); await p.waitForTimeout(300);
-  if (opts.load !== false) { await p.setInputFiles('input[data-act=import]', files()); await p.waitForSelector('#sheet:not([hidden]) .report', { timeout: 30000 }); await p.keyboard.press('Escape'); await p.waitForTimeout(300); }
+  if (opts.load !== false) { await p.setInputFiles('input[data-act=import]', files()); await confirmDialog(p); await p.waitForSelector('#sheet:not([hidden]) .report', { timeout: 30000 }); await p.keyboard.press('Escape'); await p.waitForTimeout(300); }
   return p;
 }
 export { reporter } from './report.mjs';

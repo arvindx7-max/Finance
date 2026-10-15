@@ -11,3 +11,6 @@ To update the app later: upload the changed files and change VERSION in sw.js (e
 
 `tests/` holds the automatic checks (`npm install` and `npm test` inside that folder). They use only the invented
 data from the mock data ledger in `CLAUDE.md`, and GitHub runs them on every branch and pull request.
+
+## Demo mode (v20)
+Settings has a Demo mode that shows made-up data (built only from the mock data ledger in `CLAUDE.md`). Your own data is encrypted and hidden while it runs; exit with Face ID / Touch ID, or with the vault passphrase. Nothing done in the demo is saved.
