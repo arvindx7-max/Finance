@@ -1,0 +1,28 @@
+name: tests
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install test tools
+        working-directory: tests
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium webkit
+      - name: Unit checks (catalog, rules, one-time conversion)
+        run: node tests/unit.mjs
+      - name: Browser checks in Chromium (iPhone and laptop size, light and dark; mock data only)
+        run: node tests/e2e.mjs
+      - name: Browser checks in WebKit, Safari's engine (same checks)
+        run: node tests/e2e.mjs
+        env:
+          BROWSER: webkit
