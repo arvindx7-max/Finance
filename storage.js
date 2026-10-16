@@ -19,9 +19,12 @@ export function db() {
   return dbp;
 }
 export async function all(store) { const d = await db(); return new Promise((res, rej) => { const q = d.transaction(store).objectStore(store).getAll(); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); }
-export async function rawPut(store, items) { const d = await db(); return new Promise((res, rej) => { const t = d.transaction(store, 'readwrite'); const s = t.objectStore(store); items.forEach((i) => s.put(i)); t.oncomplete = res; t.onerror = () => rej(t.error); }); }
-export async function rawClear(store) { const d = await db(); return new Promise((res) => { const t = d.transaction(store, 'readwrite'); t.objectStore(store).clear(); t.oncomplete = res; }); }
-export async function rawDel(k) { const d = await db(); return new Promise((res) => { const t = d.transaction('kv', 'readwrite'); t.objectStore('kv').delete(k); t.oncomplete = res; }); }
+// v20: a write either finishes or fails with an error. A full disk makes the browser cancel ("abort") a write without an
+// error event; that is reported as a failure too, so nothing waits forever and nothing carries on as if it was saved.
+const settle = (t, res, rej) => { t.oncomplete = () => res(); t.onerror = () => rej(t.error || new Error('Saving failed.')); t.onabort = () => rej(t.error || new Error('Saving was cancelled (is the storage full?).')); };
+export async function rawPut(store, items) { const d = await db(); return new Promise((res, rej) => { const t = d.transaction(store, 'readwrite'); settle(t, res, rej); const s = t.objectStore(store); items.forEach((i) => s.put(i)); }); }
+export async function rawClear(store) { const d = await db(); return new Promise((res, rej) => { const t = d.transaction(store, 'readwrite'); settle(t, res, rej); t.objectStore(store).clear(); }); }
+export async function rawDel(k) { const d = await db(); return new Promise((res, rej) => { const t = d.transaction('kv', 'readwrite'); settle(t, res, rej); t.objectStore('kv').delete(k); }); }
 export async function kvGet(k, def) { const d = await db(); return new Promise((res) => { const q = d.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => res(q.result ? q.result.v : def); q.onerror = () => res(def); }); }
 // With app lock on, bookings, statements, settings and the vault key never touch storage in the clear:
 // they live in memory and are written as one encrypted blob (see sealAll).

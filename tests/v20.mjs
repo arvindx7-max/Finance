@@ -196,7 +196,7 @@ for (const [dn, vp] of [['iPhone', PHONE], ['Mac', MAC]]) {
   await p.waitForSelector('#sheet:not([hidden]) .report', { timeout: 15000 }); await p.waitForTimeout(300);
   ok(`${N} dropping a CSV imports it like the file picker`, (await p.evaluate(() => window.__app.state.tx.length)) > n0 && (await p.evaluate(() => window.__app.state.agg.months.includes('2026-09'))));
   ok(`${N} the drop zone is hidden after the drop`, await p.evaluate(() => document.querySelector('#dropzone').hidden));
-  await p.keyboard.press('Escape'); await p.waitForTimeout(200);
+  await p.keyboard.press('Escape'); await p.waitForSelector('#sheet', { state: 'hidden' }); await p.waitForTimeout(200);
   const n1 = await p.evaluate(() => window.__app.state.tx.length);
   await drag(['dragenter', 'drop'], [{ n: 'notes.txt', t: 'text/plain', c: 'Test note' }]);
   await p.waitForTimeout(400);
@@ -235,6 +235,56 @@ for (const [dn, vp] of [['iPhone', PHONE], ['Mac', MAC]]) {
   await p.keyboard.press('Escape'); await p.waitForTimeout(200);
   await tabTo(p, 'data', vp);
   ok(`${N} Gemini Add statements spans the full width on the Mac`, await p.evaluate(() => document.querySelector('.data-grid .card').classList.contains('wide')));
+  ok(`${N} no errors`, p.errs.length === 0, p.errs.join('; '));
+  await p.context().close();
+}
+// ---------- Gemini change review: safe Demo start, shape check on exit, no drop over an open window ----------
+for (const [dn, vp] of [['iPhone', PHONE], ['Mac', MAC]]) {
+  const N = `${dn}: v20 review`;
+  const startTry = async (p) => { await goSettings(p, vp); await p.click('[data-act=startdemo]'); await p.fill('#dlg-in', PASS); await p.click('[data-dlg=ok]'); await p.waitForTimeout(2500); };
+  // (1) the save of the protected copy is cancelled by the browser (as when the storage is full)
+  {
+    const p = await open(b, port, vp); const real = await stat(p); await setupVault(p);
+    await p.evaluate(() => { const put = IDBObjectStore.prototype.put; IDBObjectStore.prototype.put = function (v, ...r) { if (v && v.k === 'demoVault') { const req = put.call(this, v, ...r); this.transaction.abort(); return req; } return put.call(this, v, ...r); }; });
+    await startTry(p);
+    const i = await idb(p);
+    ok(`${N} a cancelled save stops the start: nothing removed, no demo`, i.tx.length === real.tx && !i.kv.includes('demo') && !(await stat(p)).strip, JSON.stringify(i.kv));
+    ok(`${N} a cancelled save does not leave the app waiting`, await p.evaluate(() => document.querySelector('#busy').hidden));
+    ok(`${N} no page errors`, p.errs.length === 0, p.errs.join('; '));
+    await p.context().close();
+  }
+  // (2) the protected copy is saved damaged: the read-back check stops the start
+  {
+    const p = await open(b, port, vp); const real = await stat(p); await setupVault(p);
+    await p.evaluate(() => { const put = IDBObjectStore.prototype.put; IDBObjectStore.prototype.put = function (v, ...r) { if (v && v.k === 'demoVault') { const o = JSON.parse(v.v); o.ct = (o.ct[0] === 'A' ? 'B' : 'A') + o.ct.slice(1); return put.call(this, { k: v.k, v: JSON.stringify(o) }, ...r); } return put.call(this, v, ...r); }; });
+    await startTry(p);
+    const i = await idb(p);
+    ok(`${N} a damaged protected copy stops the start and nothing is removed`, i.tx.length === real.tx && i.kv.includes('settings') && !i.kv.includes('demo') && !i.kv.includes('demoVault'), JSON.stringify(i.kv));
+    ok(`${N} the reason is shown`, /could not be protected/.test(await p.textContent('#toast')));
+    await p.context().close();
+  }
+  // (3) exit: a protected copy that opens but is not complete is not written back
+  {
+    const p = await open(b, port, vp); await setupVault(p);
+    await goSettings(p, vp); await p.click('[data-act=startdemo]'); await p.fill('#dlg-in', PASS);
+    await Promise.all([p.waitForEvent('load'), p.click('[data-dlg=ok]')]); await p.waitForSelector('#main .topbar'); await p.waitForTimeout(500);
+    await p.evaluate(async (pass) => { const C = await import('./cloud.js'); const S = await import('./storage.js'); const salt = C.newSalt(); const v = await C.seal({ tx: 'not a list' }, await C.deriveKey(pass, salt), salt); await S.rawPut('kv', [{ k: 'demoVault', v }]); }, PASS);
+    await goSettings(p, vp); await p.click('#main [data-act=exitdemo]'); await p.fill('#xd-pass', PASS); await p.click('[data-xd=pass]'); await p.waitForTimeout(1500);
+    const i = await idb(p);
+    ok(`${N} an incomplete protected copy is not written back; the demo stays`, /not complete/.test(await p.textContent('#xd-msg')) && i.tx.length === 0 && i.kv.includes('demoVault') && i.kv.includes('demo'));
+    await p.context().close();
+  }
+}
+// (4) Mac: a file dropped while a question is open is ignored, the question stays
+{
+  const p = await open(b, port, MAC); const N = 'Mac: v20 review';
+  const drop = (n, t, c) => p.evaluate(([n, t, c]) => { const dt = new DataTransfer(); dt.items.add(new File([c], n, { type: t })); for (const ty of ['dragenter', 'drop']) document.dispatchEvent(new DragEvent(ty, { dataTransfer: dt, bubbles: true, cancelable: true })); }, [n, t, c]);
+  await drop('rules_test.json', 'application/json', JSON.stringify(lineFile()));
+  await p.waitForSelector('#dialog:not([hidden]) [data-dlg=ok]', { timeout: 5000 });
+  const n0 = await p.evaluate(() => window.__app.state.tx.length);
+  await drop('statement_test_2026-09.csv', 'text/csv', csv('2026-09')); await p.waitForTimeout(500);
+  ok(`${N} a drop while a question is open is ignored and says why`, /Close the open window first/.test(await p.textContent('#toast')) && /Load this rules file/.test(await p.textContent('#dialog')) && (await p.evaluate(() => window.__app.state.tx.length)) === n0);
+  await p.click('[data-dlg=cancel]'); await p.waitForTimeout(400);
   ok(`${N} no errors`, p.errs.length === 0, p.errs.join('; '));
   await p.context().close();
 }

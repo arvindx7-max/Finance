@@ -181,14 +181,15 @@ document.addEventListener('click', async (e) => {
 {
   let depth = 0; const dz = $('#dropzone');
   const files = (e) => e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files');
-  const canDrop = () => !(lock.on && !lock.key) && !lock.demo && matchMedia('(hover: hover) and (pointer: fine)').matches;
+  const openNow = () => !$('#dialog').hidden || !$('#sheet').hidden || !$('#busy').hidden; // a question, sheet or import is open
+  const canDrop = () => !(lock.on && !lock.key) && !lock.demo && !openNow() && matchMedia('(hover: hover) and (pointer: fine)').matches;
   const wanted = (f) => /\.(pdf|csv|json)$/i.test(f.name) || /^(application\/pdf|text\/csv|application\/json)$/.test(f.type);
   document.addEventListener('dragenter', (e) => { if (!files(e)) return; e.preventDefault(); depth++; if (canDrop()) dz.hidden = false; });
   document.addEventListener('dragover', (e) => { if (!files(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = canDrop() ? 'copy' : 'none'; });
   document.addEventListener('dragleave', (e) => { if (!files(e)) return; depth = Math.max(0, depth - 1); if (!depth) dz.hidden = true; });
   document.addEventListener('drop', async (e) => {
     if (!files(e)) return; e.preventDefault(); depth = 0; dz.hidden = true;
-    if (!canDrop()) { toast(lock.demo ? 'Not available in the demo.' : 'Unlock the app first to import files.'); return; }
+    if (!canDrop()) { toast(lock.demo ? 'Not available in the demo.' : openNow() ? 'Close the open window first, then drop the files again.' : 'Unlock the app first to import files.'); return; }
     const all = [...e.dataTransfer.files]; const ok = all.filter(wanted);
     if (!ok.length) { toast('Only PDF and CSV statements, and rules or backup files can be imported.'); return; }
     if (ok.length < all.length) toast(`${all.length - ok.length} other file${all.length - ok.length > 1 ? 's were' : ' was'} ignored.`);

@@ -65,6 +65,8 @@ async function purge() {
   await rawClear('tx'); await rawClear('statements');
   for (const k of PURGE) await rawDel(k);
 }
+// The protected copy must hold bookings, statements and the stored settings, as written by startDemo.
+const validPayload = (d) => !!d && Array.isArray(d.tx) && Array.isArray(d.statements) && !!d.kv && typeof d.kv === 'object' && !Array.isArray(d.kv);
 // pass: only needed with app lock off.
 export async function startDemo(pass) {
   if (lock.on) { await sealAll(); await rawDel('gtoken'); await rawPut('kv', [{ k: 'demo', v: { mode: 'lock' } }]); return; }
@@ -72,7 +74,12 @@ export async function startDemo(pass) {
   const kv = {}; for (const k of KV_SEALED) kv[k] = await kvGet(k, null);
   const salt = C.newSalt(); const key = await C.deriveKey(pass, salt);
   const vault = await C.seal({ tx: await all('tx'), statements: await all('statements'), kv }, key, salt);
-  await rawPut('kv', [{ k: 'demoVault', v: vault }, { k: 'demo', v: { mode: 'pass', pending: true } }]); // data is safe before anything is removed
+  await rawPut('kv', [{ k: 'demoVault', v: vault }]);
+  // Read the protected copy back and open it with the passphrase. Only then is the demo marked as starting
+  // (a page closed before this point leaves your data as it was) and the plain copy removed.
+  try { if (!validPayload(await C.unseal(await kvGet('demoVault', null), key))) throw new Error('bad'); }
+  catch { await rawDel('demoVault').catch(() => {}); throw new Error('Your data could not be protected on this device, so the demo was not started. Nothing was changed.'); }
+  await rawPut('kv', [{ k: 'demo', v: { mode: 'pass', pending: true } }]);
   await purge();
   await rawPut('kv', [{ k: 'demo', v: { mode: 'pass' } }]);
 }
@@ -83,6 +90,7 @@ export async function exitWithPassphrase(pass) {
   const vault = await kvGet('demoVault', null); if (!vault) throw new Error('No protected data found.');
   const salt = JSON.parse(vault).salt; const iter = JSON.parse(vault).iter;
   const d = await C.unseal(vault, await C.deriveKey(pass, salt, iter)).catch(() => { throw new Error("That passphrase doesn't open your data."); });
+  if (!validPayload(d)) throw new Error('The protected copy is not complete, so nothing was changed. Your data is still protected on this device.');
   await rawPut('tx', d.tx); await rawPut('statements', d.statements);
   await rawPut('kv', Object.entries(d.kv).filter(([, v]) => v !== null).map(([k, v]) => ({ k, v })));
   await rawDel('demoVault'); await rawDel('demo');
