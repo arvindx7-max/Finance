@@ -131,6 +131,22 @@ button.seal { border: 0; background: none; padding: 0; text-align: left; }
 /* ---------- cards & charts ---------- */
 .card { margin: 0 12px 12px; padding: 18px; background: var(--surface); border-radius: var(--r-card); border: 1px solid var(--line); }
 .card.danger h2 { color: var(--coral); }
+.demo-strip { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.demo-strip .badge { flex: none; overflow: visible; background: var(--saffron); color: #1A1200; }
+.demo-strip > span:not(.badge) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.demo-strip .link { flex: none; margin-left: auto; font-weight: 650; }
+.dialog-card .stack { display: flex; flex-direction: column; gap: 8px; }
+.dialog-card .stack input { width: 100%; }
+.dialog-card .bad:empty { display: none; }
+.lockscreen .demo-btn { margin-top: 18px; }
+.card.danger { border-color: color-mix(in srgb, var(--coral) 45%, var(--line)); }
+.addmore ul { list-style: none; margin: 8px 0 0; padding: 0; }
+.addmore li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.addmore li:last-child { border-bottom: 0; }
+.addmore li span { font-weight: 650; font-size: 15px; min-width: 0; }
+.addmore li span small { display: block; font-size: 12px; color: var(--muted); font-weight: 400; margin-top: 2px; }
+.addmore .btn { flex: none; }
+.group-head { grid-column: 1 / -1; margin: 18px 4px 0; font-size: 13px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); font-family: var(--text); }
 .chart { width: 100%; height: auto; display: block; overflow: visible; }
 .chart .grid { stroke: var(--line); stroke-width: 1; }
 .chart .zero { stroke: var(--slate); stroke-width: 1; }
@@ -178,8 +194,16 @@ table.grid { border-collapse: collapse; font-size: 13px; min-width: 100%; }
 .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 input[type=month], input[type=date], input[name=name], select { font: inherit; font-size: 16px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); color: var(--ink); }
 .modes.opts { margin: 10px 0 8px; }
-.tripform { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+/* B57: grid columns and fields may shrink below the date fields' natural width, so nothing sticks out of the card at 390 px */
+.tripform { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; }
 .tripform input[name=name], .tripform .btn { grid-column: 1 / -1; }
+.tripform input:not([type=checkbox]), input[type=date], input[type=month] { min-width: 0; max-width: 100%; box-sizing: border-box; }
+.tripform input:not([type=checkbox]) { width: 100%; }
+.tripform .btn { width: 100%; }
+.tripform input[type=date] { display: block; width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; }
+@media (max-width: 480px) { .tripform input[type=date] { padding-left: 8px; padding-right: 8px; } }
+.ld-list li.notick { grid-template-columns: 1fr auto; }
+.ld-all { width: 100%; margin-top: 8px; }
 .trips { list-style: none; padding: 0; margin: 0 0 10px; }
 .trips li { display: flex; gap: 10px; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
 .trips small, .manage small { display: block; color: var(--muted); font-size: 12px; }
@@ -463,6 +487,49 @@ html[data-motion="reduced"] .tabbar button:active svg, html[data-motion="reduced
 html[data-motion="reduced"] .river i { animation: none; }
 html[data-motion="reduced"] #sheet-body { transform: none; transition: opacity .2s; opacity: 0; }
 html[data-motion="reduced"] #sheet.open #sheet-body { opacity: 1; }
+
+/* v20: Review suggestions and answered rows (I68) */
+.rv-count { font-size: 15px; font-weight: 650; color: var(--muted); margin-left: 8px; font-family: var(--text); }
+.sugg { grid-column: 1 / -1; margin: 4px 0 2px; }
+.sugg .lbl { display: block; font-size: 12px; font-weight: 650; color: var(--muted); margin-bottom: 6px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chips button { font: inherit; font-size: 15px; font-weight: 650; padding: 9px 14px; min-height: 40px; border-radius: 999px; border: 1px solid var(--line); background: var(--raised); color: var(--ink); cursor: pointer; }
+.done-row { display: flex; align-items: center; gap: 12px; padding: 4px 0; }
+.done-row .ok { flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--lagoon-soft); color: var(--lagoon); display: grid; place-items: center; font-weight: 800; font-style: normal; }
+.done-row span { flex: 1; min-width: 0; font-size: 15px; }
+.done-row small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.done-row .link { flex: none; font-weight: 700; }
+/* v20: line detail (I69) */
+.grid th .linkname { all: unset; cursor: pointer; text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 3px; }
+.grid th .linkname:hover { text-decoration-color: var(--muted); }
+.grid th .linkname:focus-visible { outline: 2px solid var(--indigo); border-radius: 4px; }
+.ld-sub { color: var(--muted); font-size: 13px; margin: 2px 0 12px; }
+.ld-bars { display: flex; gap: 6px; height: 120px; align-items: flex-end; margin: 6px 0 4px; }
+.ld-bars button { all: unset; flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; font-size: 11px; color: var(--muted); cursor: pointer; }
+.ld-bars button:focus-visible { outline: 2px solid var(--indigo); border-radius: 6px; }
+.ld-bars i { display: block; width: 72%; border-radius: 5px 5px 2px 2px; background: var(--indigo); margin-bottom: 4px; opacity: .55; }
+.ld-bars button.on { color: var(--tab-on); font-weight: 800; } .ld-bars button.on i { opacity: 1; }
+.ld-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 8px 0 6px; }
+.ld-stats div { background: var(--raised); border-radius: 14px; padding: 10px 12px; min-width: 0; }
+.ld-stats b { display: block; font-family: var(--num); font-size: 17px; }
+.ld-stats span { display: block; line-height: 1.3; font-size: 12px; color: var(--muted); }
+.ld-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin: 16px 0 4px; }
+.ld-head h3 { margin: 0 !important; }
+.ld-list { list-style: none; margin: 0; padding: 0; }
+.ld-list li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--line); }
+.ld-list li.ld-month { display: block; padding: 14px 0 4px; border-bottom: 0; } .ld-list h4 { margin: 0; font-size: 13px; color: var(--muted); }
+.ld-list input { width: 22px; height: 22px; accent-color: var(--indigo); margin: 0; }
+.ld-list b { display: block; font-size: 15px; } .ld-list span { font-size: 12px; color: var(--muted); }
+.ld-list strong { font-family: var(--num); }
+.ld-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+.ld-actions .btn[disabled] { opacity: .5; }
+/* v20: drop statements on the window (I70) */
+#dropzone { position: fixed; inset: 0; z-index: 30; background: color-mix(in srgb, var(--paper) 82%, transparent); backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); pointer-events: none; }
+#dropzone[hidden] { display: none; }
+#dropzone > div { position: absolute; inset: 20px; border: 3px dashed var(--indigo); border-radius: 28px; display: grid; place-items: center; text-align: center; align-content: center; }
+#dropzone h2 { font-family: var(--num); font-size: 30px; font-weight: 800; margin: 0 0 8px; }
+#dropzone p { color: var(--muted); margin: 0; font-size: 15px; }
+#dropzone svg { width: 56px; height: 56px; stroke: var(--indigo); fill: none; stroke-width: 1.8; margin: 0 auto 12px; display: block; }
 </style>
 </head>
 <body>
@@ -479,6 +546,7 @@ html[data-motion="reduced"] #sheet.open #sheet-body { opacity: 1; }
 </nav>
 <main id="main" class="app"></main>
 <div id="sheet" hidden><div id="sheet-body" role="dialog" aria-modal="true" aria-label="Details"></div></div>
+<div id="dropzone" hidden aria-hidden="true"><div><div><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M4 17v3h16v-3"/></svg><h2>Drop statements to import</h2><p>PDF or CSV statements, or your rules file. Bookings already stored are skipped.</p></div></div></div>
 <div id="dialog" hidden></div>
 <div id="toast" role="status" hidden></div>
 <script src="config.js"></script>

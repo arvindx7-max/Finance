@@ -6,11 +6,12 @@ import { $, daysSince, eur, h, n2, refreshSheet, sheet } from './util.js';
 import { all, lock } from './storage.js';
 import { change, state, txById } from './state.js';
 import { cloud, cloudCard, cloudPill, cloudReady, live, same } from './sync.js';
-import { DEVICE, lockCard, lockView } from './security.js';
+import { DEVICE, isPhone, lockCard, lockView } from './security.js';
 import { MOTIONS, SPEEDS, afterRender, beforeRender, motion, reducedMotion, resetMotion } from './motion.js';
 import { pdfStatements } from './io.js';
+import { suggestLines } from './suggest.js';
 // ---------------- insights tab ----------------
-export const APP_VERSION = 'v19.1';
+export const APP_VERSION = 'v20';
 export const pct = (x) => `${Math.round(x * 100)}%`;
 export function bar(ratio, tone) { const w = Math.min(100, Math.max(0, ratio * 100)); return `<span class="pbar ${tone}"><i style="width:${w.toFixed(1)}%"></i></span>`; }
 export function insightsView() {
@@ -69,7 +70,10 @@ export function insightsView() {
       <p class="fine">Started at ${eur(sb.start.amount)} on 1 ${h(monthLabel(sb.start.month))}. Only transfers this account can see are counted; interest, other deposits or spending from that account are not.</p>
       <button class="link" data-act="editsavbal">Change starting balance</button></section>`;
   }
-  return `${topbar('Insights', periodSub())}${periodPicker()}<div class="data-grid">${savHtml}${budgetHtml}${goalHtml}${recHtml}${upHtml}${feeHtml}${patHtml}</div>`;
+  // I67: insights that are set up lead; the ones not set up yet wait in one small card at the bottom.
+  const todo = [[!sb, 'Savings balance', 'Follow what is in your savings account', 'editsavbal'], [!anyBudget, 'Budgets', 'A monthly limit per category', 'editbudgets'], [!g, 'Savings goal', 'A target for the year and your pace', 'editgoal']].filter((x) => x[0]);
+  const moreHtml = todo.length ? `<section class="card addmore"><h2>Add more insights</h2><ul>${todo.map(([, t, d, act]) => `<li><span>${t}<small>${d}</small></span><button class="btn" data-act="${act}">Set up</button></li>`).join('')}</ul></section>` : '';
+  return `${topbar('Insights', periodSub())}${periodPicker()}<div class="data-grid">${sb ? savHtml : ''}${anyBudget ? budgetHtml : ''}${g ? goalHtml : ''}${recHtml}${upHtml}${feeHtml}${patHtml}${moreHtml}</div>`;
 }
 export function budgetSheet() {
   const groups = [...new Set(state.agg.order.filter((l) => l.sec === 'variable').map((l) => l.group || 'Other'))];
@@ -144,6 +148,7 @@ export function searchHits() {
 
 // ---------------- render ----------------
 export function render() {
+  if (state.tab !== 'review' && state.reviewDone.length) state.reviewDone = []; // I68: answered rows only last while Review is open
   document.querySelectorAll('.tabbar button').forEach((b) => b.setAttribute('aria-current', b.dataset.tab === state.tab ? 'page' : 'false'));
   const n = state.agg.review.length + state.agg.flags.length + state.agg.passFlags.length;
   $('#review-badge').textContent = n; $('#review-badge').hidden = !n;
@@ -189,6 +194,7 @@ export function emptyView() {
 }
 export function backupBanner() {
   const d = daysSince(state.lastBackup);
+  if (lock.demo) return '';
   if ((d !== null && d < 7) || (cloud.meta && cloud.meta.fileId && cloud.key)) return '';
   return `<button class="banner" data-act="backup">${d === null ? 'No backup yet.' : `Last backup ${d} days ago.`} <u>Export backup</u></button>`;
 }
@@ -245,7 +251,7 @@ export function applyPalette(p) {
 function syncThemeColor() { const c = getComputedStyle(document.documentElement).getPropertyValue('--paper').trim(); if (c) document.querySelector('meta[name=theme-color]').content = c; }
 export function isDark() { return document.documentElement.dataset.theme === 'dark' || (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches); }
 export function topbar(title, sub = '') {
-  const status = cloudPill();
+  const status = lock.demo ? '<span class="demo-strip"><span class="badge">Demo</span><span>Made-up data, not yours</span><button class="link" data-act="exitdemo">Exit demo</button></span>' : cloudPill();
   const back = state.back && state.back.tab !== state.tab ? `<button class="backlink" data-act="back">‹ ${h(state.back.label)}</button>` : '';
   // I50: the gear opens Settings on the phone (the Mac sidebar has its own Settings item); I51: the subtitle says where you are
   return `${back}<header class="topbar${status ? ' has-status' : ''}"><h1>${h(title)}${sub ? `<span class="sub"> · ${h(sub)}</span>` : ''}</h1><div class="row"><button class="icon-btn" data-act="search" aria-label="Search bookings"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg></button>${state.tab === 'settings' ? '' : `<button class="icon-btn gear" data-act="settings" aria-label="Settings"><svg viewBox="0 0 24 24"><path d="${GEAR}"/><circle cx="12" cy="12" r="3"/></svg></button>`}</div>${status ? `<div class="tb-status">${status}</div>` : ''}</header>`;
@@ -453,7 +459,7 @@ export function monthsView() {
     const cells = ms.map((m) => { const c = a.cell[`${l.id}|${m}`]; if (!c) return '<td class="nil">–</td>'; const v = sign * c.amt; tot += v;
       const heat = shade && avgL ? Math.max(0, Math.min(1, (v / avgL - 1.15) / 1.2)) : 0;
       return `<td${heat > 0 ? ` class="hot" style="--heat:${(heat * 30 + 8).toFixed(0)}%" title="${Math.round(v / avgL * 100)}% of usual"` : ''}><button data-cell="${h(l.id)}|${m}">${n2(v)}<small>${h(shortDates(c.dates))}</small></button></td>`; }).join('');
-    return `${bar}<tr><th>${h(l.label)}</th><td class="tot">${n2(tot)}</td>${cells}</tr>`;
+    return `${bar}<tr><th><button class="linkname" data-line="${h(l.id)}">${h(l.label)}</button></th><td class="tot">${n2(tot)}</td>${cells}</tr>`;
   }).join('');
   const sumOf = Object.fromEntries(a.summary.map((x) => [x.month, x]));
   const all = sumMonths(a.months); // B44: totals are netted once over the whole time, like the Overview
@@ -467,7 +473,7 @@ export function monthsView() {
   const sm = WIDE.matches ? sumMonth() : null; // I53: on the Mac the summary card follows the month you click
   return `${topbar('Months', (SEG.find(([k]) => k === state.section) || [, ''])[1])}${seg}<div class="split">${WIDE.matches ? summaryColumn() : ''}${sm && ms.includes(sm) ? `<style>.grid.fixed tbody tr > :nth-child(${ms.indexOf(sm) + 3}), .grid.fixed tfoot tr > :nth-child(${ms.indexOf(sm) + 3}) { box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--indigo) 8%, transparent); }</style>` : ''}<div class="tablewrap"><table class="grid fixed" style="--cols:${ms.length + 1};--numw:${numW}px"><colgroup><col class="c-line"><col class="c-num">${ms.map((m) => `<col class="c-num${m === sm ? ' selcol' : ''}">`).join('')}</colgroup><thead><tr><th>Line</th><th class="tot">Total</th>${ms.map((m) => `<th data-m="${m}"${sm ? ` data-summonth="${m}" title="Show ${h(monthLabel(m))} in the summary"` : ''}${m === sm ? ' class="selm"' : ''}>${monthLabel(m, true)}</th>`).join('')}</tr></thead><tbody>${rows || `<tr><td colspan="${ms.length + 2}" class="fine">Nothing in this section yet.</td></tr>`}</tbody><tfoot>${foot}</tfoot></table></div>
 </div>
-  <p class="fine pad">Tap an amount to see its bookings and move any of them to another line. Tinted amounts are well above that line's usual level. Small lines show the last six months.</p>`;
+  <p class="fine pad">Tap an amount to see its bookings and move any of them to another line; tap a line name to see it over time. Tinted amounts are well above that line's usual level. Small lines show the last six months.</p>`;
 }
 // Laptop: the month's totals beside the table, plus Transfers abroad by month.
 function sumMonth() { const ms = state.agg.months; return ms.includes(state.sumMonth) ? state.sumMonth : ms[ms.length - 1]; }
@@ -491,6 +497,45 @@ export function searchResults() {
   <ul class="results">${shown.map((t) => `<li><button data-tx="${h(t.id)}"><span><b>${h(t.vendor)}</b><small>${deDate(t.date)} · ${h(lineLabel(t.line))}${(state.settings.notes || {})[t.id] ? ` · ${h(state.settings.notes[t.id])}` : ''}</small></span><strong class="${t.amount > 0 ? 'pos' : ''}">${eur(t.amount)}</strong></button></li>`).join('')}</ul>`;
 }
 
+// ---------------- line detail (v20, I69) ----------------
+// Tap a line name in Months: one sheet with that line over time. Bookings are moved by ticking them; never all at once.
+export const ld = { line: null, month: null, sel: new Set(), moving: false, all: false };
+const LD_CAP = 20; // long lines show the 20 most recent bookings first
+const ldSign = (sec) => (['income', 'passthrough', 'fromsav'].includes(sec) ? 1 : -1);
+export function lineSheet(id) { ld.line = id; ld.month = null; ld.all = false; ld.sel = new Set(); ld.moving = false; sheet(lineHtml(), lineHtml); }
+export function lineBack() { ld.moving = false; sheet(lineHtml(), lineHtml); }
+export function lineHtml() {
+  const a = state.agg; const meta = lineMeta(ld.line);
+  if (!meta) return '<h2>Line</h2><p class="fine">This line no longer exists.</p><button class="btn" data-act="close">Done</button>';
+  const sign = ldSign(meta.sec);
+  const rows = a.rows.filter((t) => t.line === ld.line);
+  const months = a.months.slice(-12);
+  const sums = months.map((m) => rows.filter((t) => monthOf(t.date) === m).reduce((x, t) => x + sign * t.amount, 0));
+  const max = Math.max(...sums.map(Math.abs), 1);
+  const avg = months.length ? sums.reduce((x, y) => x + y, 0) / months.length : 0;
+  const hi = months.length ? Math.max(...sums) : 0; const hiM = months[sums.indexOf(hi)];
+  const last = sums.length ? sums[sums.length - 1] : 0; const lastM = months[months.length - 1];
+  const sel = ld.month && months.includes(ld.month) ? ld.month : null;
+  const shown = rows.filter((t) => !sel || monthOf(t.date) === sel).sort((x, y) => y.date.localeCompare(x.date));
+  const diff = Math.round((last - avg) * 100) / 100;
+  const own = meta.id.startsWith('c.');
+  const trip = meta.id.startsWith('trip:'); // trip lines follow the trip dates: their bookings cannot be moved from here
+  const listed = ld.all ? shown : shown.slice(0, LD_CAP);
+  if (ld.moving) {
+    const n = ld.sel.size;
+    return `<h2>Move ${n} booking${n === 1 ? '' : 's'}</h2><p class="fine">From ${h(meta.label)} to the line you choose. ${n === 1 ? 'Only the booking you ticked moves.' : `Only the ${n} bookings you ticked move.`} You can undo this right after.</p>
+    <form class="stack" data-act="ldmove" data-back="line"><label>Move to<select name="line" required><option value="">Choose a line…</option>${lineOptions('').replace('<optgroup label="Something else"><option value="__new">＋ New line…</option></optgroup>', '')}</select></label>
+    <button class="btn primary">Move ${n} booking${n === 1 ? '' : 's'}</button></form>`;
+  }
+  const byMonth = {}; for (const t of listed) (byMonth[monthOf(t.date)] ||= []).push(t);
+  return `<h2>${h(meta.label)}</h2><p class="ld-sub">${h(SECTIONS[meta.sec] || '')}${meta.group ? ` · ${h(meta.group)}` : ''} · ${rows.length} booking${rows.length === 1 ? '' : 's'}</p>
+  ${rows.length ? `<div class="ld-bars" role="group" aria-label="Amount per month">${months.map((m, i) => `<button class="${m === sel ? 'on' : ''}" data-ldmonth="${m}" aria-pressed="${m === sel}" aria-label="${h(monthLabel(m))}: ${eur(sums[i])}"><i style="height:${Math.max(2, Math.abs(sums[i]) / max * 100).toFixed(0)}%"></i>${h(monthLabel(m, true))}</button>`).join('')}</div>
+  <div class="ld-stats"><div><b>${eur(avg)}</b><span>Average per month</span></div><div><b>${eur(hi)}</b><span>Highest: ${h(monthLabel(hiM, true))}</span></div><div><b>${eur(last)}</b><span>${h(monthLabel(lastM, true))}, ${Math.abs(diff) < 0.005 ? 'same as average' : `${diff > 0 ? '+' : '−'}${eur(Math.abs(diff))} vs average`}</span></div></div>
+  <div class="ld-head"><h3>${sel ? `${h(monthLabel(sel))} · ${shown.length} booking${shown.length === 1 ? '' : 's'}` : `All months · ${shown.length} booking${shown.length === 1 ? '' : 's'}`}</h3>${sel ? '<button class="link" data-ldmonth="">Show all months</button>' : ''}</div>
+  <ul class="ld-list">${Object.entries(byMonth).map(([m, ts]) => `${sel ? '' : `<li class="ld-month"><h4>${h(monthLabel(m))}</h4></li>`}${ts.map((t) => `<li${trip ? ' class="notick"' : ''}>${trip ? '' : `<input type="checkbox" data-ldtick="${h(t.id)}" aria-label="Select ${h(t.vendor)}, ${deDate(t.date)}"${ld.sel.has(t.id) ? ' checked' : ''}>`}<div><b>${h(t.vendor)}</b><span>${deDate(t.date)}</span></div><strong>${eur(sign * t.amount)}</strong></li>`).join('')}`).join('')}</ul>${listed.length < shown.length ? `<button class="btn ld-all" data-act="ldall">Show all ${shown.length} bookings</button>` : ''}` : '<p class="fine">No bookings on this line yet.</p>'}
+  ${trip ? '<p class="fine">Trip lines follow the trip dates in Settings, so their bookings are not moved from here.</p>' : ''}<div class="ld-actions">${trip ? '' : `<button class="btn primary" id="ld-move" data-act="ldmovego"${ld.sel.size ? '' : ' disabled'}>${ld.sel.size ? `Move ${ld.sel.size} booking${ld.sel.size === 1 ? '' : 's'}…` : 'Tick bookings to move them'}</button>`}${own ? `<button class="btn" data-renline="${h(meta.id)}">Rename</button>` : ''}<button class="btn" data-act="close">Close</button></div>`;
+}
+
 // ---------------- picking a line ----------------
 export function lineOptions(selected) {
   const trips = (state.settings.trips || []).map((t) => ({ id: `trip:${t.name}`, sec: 'variable', label: lineLabel(`trip:${t.name}`) }));
@@ -499,23 +544,41 @@ export function lineOptions(selected) {
   return order.map((sec) => { const ls = L.filter((l) => l.sec === sec); return ls.length ? `<optgroup label="${h(SECTIONS[sec])}">${ls.map((l) => `<option value="${h(l.id)}"${l.id === selected ? ' selected' : ''}>${h(l.label)}</option>`).join('')}</optgroup>` : ''; }).join('')
     + '<optgroup label="Something else"><option value="__new">＋ New line…</option></optgroup>';
 }
-export function txList(txs, allDefault = false) {
-  return `<ul class="txs">${[...txs].sort((x, y) => y.date.localeCompare(x.date)).map((t) => `<li>
+export function txList(txs, allDefault = false, review = false) {
+  return `<ul class="txs">${[...txs].sort((x, y) => y.date.localeCompare(x.date)).map((t) => {
+    // I68: in Review, up to three suggested lines are one tap; the full list stays under "Other line…"
+    const sug = review && !t.line ? suggestLines(t, state.agg.rows, 8).filter((id) => lineMeta(id)).slice(0, 3) : [];
+    return `<li>
     <div><b>${h(t.vendor)}</b><span>${deDate(t.date)}${t.cardDate && t.cardDate !== t.date ? ` · paid ${deDate(t.cardDate)}` : ''}</span></div>
     <strong class="${t.amount < 0 ? '' : 'pos'}">${eur(t.amount)}</strong>
+    ${sug.length ? `<div class="sugg"><span class="lbl">Suggested</span><div class="chips">${sug.map((id) => `<button data-suggest="${h(id)}" data-sugtx="${h(t.id)}">${h(lineLabel(id))}</button>`).join('')}</div></div>` : ''}
     <div class="fgroup">
-      <label class="frow"><span>Line</span><select data-txline="${h(t.id)}">${t.line ? '' : '<option value="" selected>Choose a line…</option>'}${lineOptions(t.line)}</select></label>
+      <label class="frow"><span>Line</span><select data-txline="${h(t.id)}">${t.line ? '' : `<option value="" selected>${sug.length ? 'Other line…' : 'Choose a line…'}</option>`}${lineOptions(t.line)}</select></label>
       <label class="frow sw"><span>Apply to every booking<small>Use this line for every booking from ${h(t.vendor)}</small></span><input type="checkbox" class="switch" data-txall="${h(t.id)}"${allDefault ? ' checked' : ''}></label>
       <label class="frow"><span>Note</span><input type="text" data-note="${h(t.id)}" value="${h((state.settings.notes || {})[t.id] || '')}" placeholder="e.g. birthday gift" maxlength="200"></label>
     </div>
     ${t.amount < 0 ? `<button class="link small" data-onetime="${h(t.id)}">Make this a one-time item…</button>` : ''}
-    <details><summary>Booking text</summary><p>${h(t.text)}</p></details></li>`).join('')}</ul>`;
+    <details><summary>Booking text</summary><p>${h(t.text)}</p></details></li>`; }).join('')}</ul>`;
 }
 export async function assign(txId, lineId, allFromVendor) {
   const t = txById(txId); if (!t) return;
+  const inReview = state.tab === 'review' && !t.line;
   await change(`Moved to ${lineLabel(lineId)}${allFromVendor ? `, for every booking from ${t.vendor}` : ''}`, (s) => {
     if (allFromVendor) { s.vendorRules[t.vkey] = lineId; delete s.txRules[t.id]; } else s.txRules[t.id] = lineId;
+    // I68: the answered booking shrinks to one line (with Undo) instead of the page jumping on
+    if (inReview) state.reviewDone = [...state.reviewDone.filter((d) => d.vkey !== t.vkey), { vkey: t.vkey, txId: t.id, line: lineId, vendor: t.vendor, label: lineLabel(lineId), all: !!allFromVendor }];
   });
+}
+// I68: undo one Review answer from its own row (independent of the order of other answers)
+export async function undoReviewAnswer(i) {
+  const d = state.reviewDone[i]; if (!d) return;
+  state.reviewDone = state.reviewDone.filter((_, k) => k !== i);
+  await change('Answer undone', (s) => { if (d.all) delete s.vendorRules[d.vkey]; else delete s.txRules[d.txId]; });
+}
+// B59: an answered row only stays while its answer exists (undone by the toast, the row or Manage: the row goes too).
+const answerLives = (d) => (d.all ? (state.settings.vendorRules || {})[d.vkey] : (state.settings.txRules || {})[d.txId]) === d.line;
+function answeredRows() {
+  return state.reviewDone.map((d, i) => `<section class="card answered"><div class="done-row" role="status"><i class="ok" aria-hidden="true">✓</i><span><b>${h(d.vendor)}</b> → ${h(d.label)}<small>${d.all ? `Also every future booking from ${h(d.vendor)}` : 'This booking only'}</small></span><button class="link" data-reviewundo="${i}">Undo</button></div></section>`).join('');
 }
 
 // New line (any section). ctx = { txId, all } when created while categorising a booking.
@@ -564,17 +627,20 @@ export function rulesFileNotice() {
   return text ? `<button class="seal bad" data-act="pickrules">${text}</button>` : '';
 }
 export function reviewView() {
+  state.reviewDone = state.reviewDone.filter(answerLives); // B59
   const byNewest = (x, y) => y.date.localeCompare(x.date);
   const r = [...state.agg.review].sort(byNewest); const f = [...state.agg.flags].sort(byNewest); const pf = [...state.agg.passFlags].sort(byNewest);
   const passHtml = pf.length ? `<section class="pad"><h1 class="h1">Forwarded abroad?</h1><p class="fine">Money came in from your savings account in a month when you also sent money abroad. If you passed it on, it is not a top-up and does not reduce your savings.</p></section>
   ${pf.map((t) => `<section class="card flag"><div><b>${h(t.vendor)}</b><span>${deDate(t.date)}, ${eur(t.abroad)} sent abroad that month</span></div><strong class="pos">${eur(t.amount)}</strong>
     <div class="row"><button class="btn primary" data-passyes="${h(t.id)}">Yes, forwarded</button><button class="btn" data-dismiss="${h(t.id)}">No, a top-up</button></div></section>`).join('')}` : '';
   const rf = rulesFileNotice() ? `<section class="pad">${rulesFileNotice()}</section>` : '';
-  if (!r.length && !f.length && !pf.length) return `${topbar('Review')}${rf}<section class="empty small"><h1>Nothing to review</h1><p>Every booking matched a rule or one of your answers, and nothing looks like a one-time spend.</p></section>`;
+  const done = answeredRows();
+  if (!r.length && !f.length && !pf.length) return `${topbar('Review')}${rf}${done}<section class="empty small"><h1>Nothing to review</h1><p>Every booking matched a rule or one of your answers, and nothing looks like a one-time spend.</p></section>`;
   const byV = {};
   for (const t of r) (byV[t.vkey] ||= []).push(t);
-  return `${topbar('Review')}${rf}${passHtml}${r.length ? `<section class="pad"><h1 class="h1">Unknown vendors</h1><p class="fine">Pick a line once; with "Apply to every booking" ticked, the app uses it for this vendor from now on.</p></section>
-  ${Object.values(byV).map((ts) => `<section class="card">${txList(ts.slice(0, 1), true)}${ts.length > 1 ? `<p class="fine">${ts.length} bookings from this vendor: ${ts.map((t) => eur(t.amount)).join(', ')}</p>` : ''}</section>`).join('')}` : ''}
+  const nV = Object.keys(byV).length; const total = state.reviewDone.length + nV;
+  return `${topbar('Review')}${rf}${passHtml}${r.length ? `<section class="pad"><h1 class="h1">Unknown vendors${total > 1 ? ` <span class="rv-count" aria-label="${state.reviewDone.length + 1} of ${total}">${state.reviewDone.length + 1} of ${total}</span>` : ''}</h1><p class="fine">Pick a line once; with "Apply to every booking" ticked, the app uses it for this vendor from now on.</p></section>
+  ${done}${Object.values(byV).map((ts) => `<section class="card">${txList(ts.slice(0, 1), true, true)}${ts.length > 1 ? `<p class="fine">${ts.length} bookings from this vendor: ${ts.map((t) => eur(t.amount)).join(', ')}</p>` : ''}</section>`).join('')}` : done}
   ${f.length ? `<section class="pad"><h1 class="h1">Possible one-time items</h1><p class="fine">These are at least three times the usual amount for their line.</p></section>
   ${f.map((t) => `<section class="card flag"><div><b>${h(t.vendor)}</b><span>${deDate(t.date)} · ${h(lineLabel(t.line))} · usually around ${eur(t.median)}</span></div><strong>${eur(t.amount)}</strong>
     <div class="row"><button class="btn primary" data-onetime="${h(t.id)}">One-time…</button><button class="btn" data-dismiss="${h(t.id)}">Regular spend</button></div></section>`).join('')}` : ''}`;
@@ -582,6 +648,7 @@ export function reviewView() {
 
 // ---------------- data ----------------
 export function dataView() {
+  if (lock.demo) return `${topbar('Data')}<div class="data-grid"><section class="card"><h2>Demo mode</h2><p class="fine">Importing, exporting, cloud sync and backups are turned off while the demo is on. Exit the demo in Settings to use them.</p></section></div>`;
   const rec = reconcile(state.tx, pdfStatements());
   const cps = state.statements.filter((s) => s.kind === 'checkpoint');
   const anchor = rec[0];
@@ -594,19 +661,15 @@ export function dataView() {
   const s = state.settings; const d = daysSince(state.lastBackup);
   const nAns = live(s.vendorRules).length + live(s.txRules).length;
   const own = (s.profile?.lines || []).filter((l) => l.id.startsWith('c.')).length;
-  return `${topbar('Data')}<div class="data-grid">${cloudCard()}<section class="card">
+  return `${topbar('Data')}<div class="data-grid"><section class="card wide">
     <h2>Add statements</h2>
-    <p class="fine">PDF Kontoauszug or CSV export. Overlapping files are fine: bookings already stored are skipped.</p>
+    <p class="fine">PDF Kontoauszug or CSV export. Overlapping files are fine: bookings already stored are skipped.${WIDE.matches ? ' On the Mac you can also drop files anywhere on this window.' : ''}</p>
     <label class="btn primary">Choose files<input type="file" accept=".pdf,.csv,.json,application/pdf,text/csv,application/json" multiple data-act="import" hidden></label>
-  </section>
+  </section>${cloudCard()}
   <section class="card">
     <h2>Your rules and answers</h2>
     <p class="fine">${s.profile ? `${(s.profile.rules || []).length} rules from your rules file, ` : 'No rules file loaded, '}${nAns} answer${nAns === 1 ? '' : 's'} from Review, ${own} line${own === 1 ? '' : 's'} you created. All of it lives only on your devices, in your encrypted vault, your backups and the exported rules file.</p>
     <div class="row"><button class="btn" data-act="manage">Manage</button><button class="btn" data-act="newline">New line</button><button class="btn" data-act="exportrules">Export rules</button><label class="btn">Load rules file<input type="file" accept=".json,application/json" data-act="import" hidden></label></div>
-  </section>
-  <section class="card">
-    <h2>Months table</h2>
-    <label class="frow sw"><span>Skip months with nothing in them<small>Months hides any month column that has no bookings in the section you are viewing. Totals still count every month.</small></span><input type="checkbox" class="switch" data-skipempty${s.skipEmptyMonths ? ' checked' : ''}></label>
   </section>
   <section class="card">
     <h2>Backup</h2>
@@ -621,31 +684,21 @@ export function dataView() {
   <section class="card wide">
     <h2>Reconciliation</h2>
     ${rec.length || cpRows ? `<ul class="recon-list">${[...rec].reverse().map((x) => { const ok = Math.abs(x.diff) < 0.005 && x.chainOk; return `<li class="${ok ? 'ok' : 'bad'}"><div><b>${deDate(x.from)} – ${deDate(x.to)}</b><span>${ok ? 'Ties' : Math.abs(x.diff) >= 0.005 ? `Off by ${eur(x.diff)}` : `Gap: opening ≠ ${deDate(x.gapFrom)} closing`}</span></div><p>${n2(x.open)} − ${n2(-x.debits)} + ${n2(x.credits)} = <b>${n2(x.computed)}</b> · bank: ${n2(x.close)}</p></li>`; }).join('')}${cpRows}</ul>` : '<p class="fine">Import a PDF statement to see the balance check.</p>'}
-  </section>
-  <section class="card">
-    <h2>Trips</h2>
-    <p class="fine">Spend paid between these dates gets its own trip line: restaurants only, or all variable spend.</p>
-    <ul class="trips">${(s.trips || []).map((t, i) => `<li><span>${h(t.name)}<small>${t.scope === 'all' ? 'All variable spend' : 'Restaurants only'}</small></span><span>${deDate(t.from)} – ${deDate(t.to)}</span><button class="link" data-deltrip="${i}">Remove</button></li>`).join('')}</ul>
-    <form class="tripform" data-act="addtrip"><input name="name" placeholder="Trip name" required><input name="from" type="date" required><input name="to" type="date" required><label class="check span"><input type="checkbox" name="all"> Include all variable spend, not just restaurants</label><button class="btn">Add trip</button></form>
-  </section>
-  <section class="card">
-    <h2>Tracking starts</h2>
-    <form class="row" data-act="start"><input type="month" name="start" value="${s.startMonth || ''}"><button class="btn">Save</button></form>
-  </section>
-  <section class="card danger">
-    <h2>Erase data on this ${DEVICE}</h2>
-    <p class="fine">Removes all bookings, statements, rules and answers. Export a backup first.</p>
-    <button class="btn warn" data-act="wipe">Erase everything</button>
   </section></div>
   <p class="fine pad">Finances ${APP_VERSION}. ${state.tx.length} bookings stored on this device. Works offline; nothing is sent anywhere.</p>`;
 }
 
 // ---------------- settings (v18): everything that controls how the app looks and behaves ----------------
 const opts = (label, list, cur, attr) => `<div class="modes opts" role="group" aria-label="${label}">${list.map(([k, l]) => `<button data-${attr}="${k}" aria-pressed="${cur === k}">${l}</button>`).join('')}</div>`;
+function demoCard() {
+  if (lock.demo) return `<section class="card"><h2>Demo mode is on</h2><p class="fine">You are looking at made-up data. Changes you make here are not kept. Your own data is encrypted and hidden until you exit.</p><button class="btn primary" data-act="exitdemo">Exit demo</button></section>`;
+  return `<section class="card"><h2>Demo mode</h2><p class="fine">Show the app to others with made-up data. Your own data is encrypted and hidden until you exit with ${lock.on ? (isPhone ? 'Face ID' : 'Touch ID') : 'your vault passphrase'}. Import, export, sync and backups are off during the demo, and demo changes are not kept.</p><button class="btn" data-act="startdemo">Start demo</button></section>`;
+}
 export function settingsView() {
+  const s = state.settings;
   const synced = cloudReady() && cloud.meta && cloud.meta.fileId;
   const lockHtml = synced ? lockCard() : `<section class="card"><h2>App lock</h2><p class="fine">Encrypt the data on this ${DEVICE} and open the app with Face ID or Touch ID. Turn on cloud sync in Data first, so your data can always be restored with your passphrase.</p><button class="btn" data-tab="data">Go to Data</button></section>`;
-  return `${topbar('Settings')}<div class="data-grid">${lockHtml}
+  return `${topbar('Settings')}<div class="data-grid">${lock.demo ? '' : lockHtml}${demoCard()}
   <section class="card">
     <h2>Appearance</h2>
     <div class="theme-row"><label for="palette">Theme</label><span class="dots" aria-hidden="true">${(PALETTES.find(([k]) => k === currentPalette()) || PALETTES[0])[3].map((c) => `<i style="background:${c}"></i>`).join('')}</span>
@@ -664,7 +717,28 @@ export function settingsView() {
     <h2>Animation speed</h2>
     ${opts('Animation speed', SPEEDS, motion.speed, 'speedset')}
     <p class="fine">How long each animation takes. Applies to both Full and Reduced.</p>
-  </section></div>
+  </section>
+  <h2 class="group-head">Data settings</h2>
+  <section class="card">
+    <h2>Months table</h2>
+    <label class="frow sw"><span>Skip months with nothing in them<small>Months hides any month column that has no bookings in the section you are viewing. Totals still count every month.</small></span><input type="checkbox" class="switch" data-skipempty${s.skipEmptyMonths ? ' checked' : ''}></label>
+  </section>
+  <section class="card">
+    <h2>Tracking starts</h2>
+    <form class="row" data-act="start"><input type="month" name="start" value="${s.startMonth || ''}"><button class="btn">Save</button></form>
+  </section>
+  <section class="card">
+    <h2>Trips</h2>
+    <p class="fine">Spend paid between these dates gets its own trip line: restaurants only, or all variable spend.</p>
+    <ul class="trips">${(s.trips || []).map((t, i) => `<li><span>${h(t.name)}<small>${t.scope === 'all' ? 'All variable spend' : 'Restaurants only'}</small></span><span>${deDate(t.from)} – ${deDate(t.to)}</span><button class="link" data-deltrip="${i}">Remove</button></li>`).join('')}</ul>
+    <form class="tripform" data-act="addtrip"><input name="name" placeholder="Trip name" required><input name="from" type="date" required><input name="to" type="date" required><label class="check span"><input type="checkbox" name="all"> Include all variable spend, not just restaurants</label><button class="btn">Add trip</button></form>
+  </section>
+  ${lock.demo ? '' : `<h2 class="group-head">Danger zone</h2>
+  <section class="card danger">
+    <h2>Erase data on this ${DEVICE}</h2>
+    <p class="fine">Removes all bookings, statements, rules and answers. Export a backup first.</p>
+    <button class="btn warn" data-act="wipe">Erase everything</button>
+  </section>`}</div>
   <p class="fine pad">Finances ${APP_VERSION}. These settings are kept on this ${DEVICE} only.</p>`;
 }
 
@@ -697,6 +771,7 @@ export function showImportReport(r) {
   sheet(`<h2>${r.errors.length && !r.added && !r.files.length ? 'Import failed' : 'Import finished'}</h2>
     <ul class="report">${r.files.map((f) => `<li>${h(f)}</li>`).join('')}${r.errors.map((e) => `<li class="bad">${h(e)}</li>`).join('')}</ul>
     ${r.added || r.dup ? `<p>${r.added} new booking${r.added === 1 ? '' : 's'} added${r.dup ? `, ${r.dup} duplicate${r.dup === 1 ? '' : 's'} skipped` : ''}.${review ? ` ${review} need${review === 1 ? 's' : ''} review.` : ''}</p>` : ''}
+    ${r.undoable ? '<button class="btn" data-act="undo">Undo loading the rules file</button>' : ''}
     ${r.added ? '<p class="fine">Save a backup now so these bookings survive if Safari clears its storage.</p><button class="btn primary" data-act="backup">Export backup</button>' : ''}
     ${review || state.agg.flags.length || state.agg.passFlags.length ? '<button class="btn" data-act="goreview">Open Review</button>' : ''}
     <button class="btn" data-act="close">Done</button>`);

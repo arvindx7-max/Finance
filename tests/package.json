@@ -1,1 +1,1 @@
-{ "name": "finances-tests", "private": true, "type": "module", "scripts": { "test": "node unit.mjs && node e2e.mjs" }, "devDependencies": { "playwright": "1.49.1" } }
+{ "name": "finances-tests", "private": true, "type": "module", "scripts": { "test": "node unit.mjs && node e2e.mjs && node v20.mjs" }, "devDependencies": { "playwright": "1.49.1" } }

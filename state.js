@@ -4,9 +4,10 @@ import { toast } from './util.js';
 import { all, kvGet, kvSet, lock } from './storage.js';
 import { markChanged, stampDiff } from './sync.js';
 import { render } from './views.js';
+import { demoData, finishStart } from './demo.js';
 // ---------------- state ----------------
 export const fresh = () => structuredClone(DEFAULT_SETTINGS);
-export const state = { tx: [], statements: [], settings: fresh(), lastBackup: null, settingsBackup: null, tab: 'overview', period: { mode: 'month', key: null }, section: 'fixed', q: '', agg: null, undo: [] };
+export const state = { tx: [], statements: [], settings: fresh(), lastBackup: null, settingsBackup: null, reviewDone: [], tab: 'overview', period: { mode: 'month', key: null }, section: 'fixed', q: '', agg: null, undo: [] };
 // Settings from any source (this device, unlock, restore, vault) pass through here. If the one-time
 // conversion changes anything, the old settings are kept first as 'settingsBackup' (never overwritten).
 export async function adopt(raw) {
@@ -17,6 +18,13 @@ export async function adopt(raw) {
   return { ...fresh(), ...r.settings };
 }
 export async function load() {
+  const dm = await kvGet('demo', null);
+  if (dm) { // demo mode: made-up data only; the real data (sealed) is not read
+    await finishStart(dm);
+    lock.demo = true; lock.on = false; lock.meta = null;
+    const d = demoData(); state.tx = d.tx; state.statements = d.statements; state.settings = await adopt(d.settings); state.settingsBackup = null; state.lastBackup = null; state.undo = [];
+    recompute(); return;
+  }
   lock.meta = await kvGet('lockMeta', null); lock.on = !!lock.meta;
   if (lock.on) { recompute(); return; } // data stays sealed until Face ID unlocks it
   state.tx = await all('tx');
@@ -31,6 +39,8 @@ export function recompute() {
   state.agg = aggregate(state.tx, state.settings);
 }
 export const saveSettings = () => kvSet('settings', state.settings);
+// One undo step for a change that does not go through change() (for example loading a rules file).
+export function pushUndo() { state.undo.push(JSON.stringify(state.settings)); if (state.undo.length > 15) state.undo.shift(); return kvSet('undo', state.undo); }
 export const ensureProfile = () => (state.settings.profile ||= emptyProfile());
 
 // Every change to your answers, lines or trips can be undone (last 15 steps).

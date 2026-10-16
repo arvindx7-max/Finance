@@ -1,5 +1,5 @@
 // End-to-end checks in a real browser at phone and laptop size, light and dark. Mock data only (see mock.mjs).
-import { serve, launch, open, PHONE, MAC } from './lib.mjs';
+import { serve, launch, open, confirmDialog, PHONE, MAC } from './lib.mjs';
 import { reporter } from './report.mjs';
 import { MONTHS, expected, legacySettings, answerOnlyFile, lineFile, oldRulesFile } from './mock.mjs';
 import fs from 'fs';
@@ -36,14 +36,14 @@ for (const [dn, vp] of [['iPhone', PHONE], ['Mac', MAC]]) for (const scheme of [
   await section(p, 'variable');
   ok(`${N}: B52 Variable keeps every month`, (await heads(p)).length === 6);
   // switch off in the Data tab
-  await tab(p, 'data', vp);
-  ok(`${N}: B52 switch sits in Data and is on by default`, await p.isChecked('input[data-skipempty]'));
+  await tab(p, 'settings', vp);
+  ok(`${N}: B52 switch sits in Settings (Data settings) and is on by default`, await p.isChecked('input[data-skipempty]'));
   await p.evaluate(() => document.querySelector('input[data-skipempty]').click()); await p.waitForTimeout(400);
   ok(`${N}: B52 switch is saved with the settings`, await p.evaluate(() => window.__app.state.settings.skipEmptyMonths === false));
   await section(p, 'onetime');
   ok(`${N}: B52 switched off: all six months show`, (await heads(p)).length === 6);
   ok(`${N}: B52 totals are the same with the switch on or off`, JSON.stringify(await totals(p)) === JSON.stringify(oneTotalOn));
-  await tab(p, 'data', vp); await p.evaluate(() => document.querySelector('input[data-skipempty]').click()); await p.waitForTimeout(400);
+  await tab(p, 'settings', vp); await p.evaluate(() => document.querySelector('input[data-skipempty]').click()); await p.waitForTimeout(400);
   // B53: wide amounts
   for (const sec of ['fixed', 'variable', 'onetime', 'income']) { await section(p, sec); ok(`${N}: B53 ${sec}: every amount fits its cell`, await fits(p)); }
   await section(p, 'income');
@@ -62,8 +62,8 @@ for (const [dn, vp] of [['iPhone', PHONE], ['Mac', MAC]]) for (const scheme of [
 // switch survives a reload
 {
   const p = await open(b, port, PHONE);
-  await tab(p, 'data', PHONE); await p.evaluate(() => document.querySelector('input[data-skipempty]').click()); await p.waitForTimeout(500);
-  await p.reload(); await p.waitForTimeout(800); await tab(p, 'data', PHONE);
+  await tab(p, 'settings', PHONE); await p.evaluate(() => document.querySelector('input[data-skipempty]').click()); await p.waitForTimeout(500);
+  await p.reload(); await p.waitForTimeout(800); await tab(p, 'settings', PHONE);
   ok('B52 switch setting survives a reload', !(await p.isChecked('input[data-skipempty]')));
   await p.context().close();
 }
@@ -80,13 +80,17 @@ for (const [dn, vp] of [['iPhone', PHONE], ['Mac', MAC]]) {
 // the one-time conversion on restore: backup first, then converted
 {
   const p = await open(b, port, PHONE);
-  const r = await p.evaluate(async (legacy) => {
+  await p.evaluate(async (legacy) => {
     const tx = window.__app.state.tx; const payload = { app: 'finance-insights', version: 2, tx, statements: window.__app.state.statements, settings: legacy };
     const file = new File([JSON.stringify(payload)], 'backup_test.json', { type: 'application/json' });
-    await window.__app.importFiles([file]);
+    window.__pending = window.__app.importFiles([file]);
+    return file.name;
+  }, legacySettings());
+  await confirmDialog(p); await p.evaluate(() => window.__pending); await p.waitForTimeout(300);
+  const r = await p.evaluate(() => {
     const st = window.__app.state;
     return { rule: st.settings.profile.rules[0].line, vendor: st.settings.vendorRules['EXAMPLE REMIT LTD'], sec: st.settings.profile.lines.find((l) => l.id === 'c.test_line').sec, backup: st.settingsBackup && st.settingsBackup.settings.vendorRules['EXAMPLE REMIT LTD'] };
-  }, legacySettings());
+  });
   ok('conversion on restore: rules, answers and lines are converted', r.rule === 'ab.transfer' && r.vendor === 'ab.transfer' && r.sec === 'abroad', JSON.stringify(r));
   ok('conversion on restore: the old settings were saved first', r.backup === 'ind.remit', JSON.stringify(r));
   ok('conversion on restore: no errors', p.errs.length === 0, p.errs.join('; '));
@@ -106,7 +110,7 @@ for (const [dn, vp] of [['iPhone', PHONE], ['Mac', MAC]]) {
 // B55: an answer to a line from a rules file that is not loaded yet
 for (const [dn, vp] of [['iPhone', PHONE], ['Mac', MAC]]) {
   const p = await open(b, port, vp);
-  const add = async (name, obj) => { await tab(p, 'data', vp); await p.setInputFiles('input[data-act=import]', [{ name, mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(obj)) }]); await p.waitForTimeout(600); await p.keyboard.press('Escape'); await p.waitForTimeout(300); };
+  const add = async (name, obj) => { await tab(p, 'data', vp); await p.setInputFiles('input[data-act=import]', [{ name, mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(obj)) }]); await confirmDialog(p); await p.waitForTimeout(600); await p.keyboard.press('Escape'); await p.waitForTimeout(300); };
   await add('rules_test.json', oldRulesFile());
   await tab(p, 'review', vp);
   ok(`${dn}: B55 a rules file from before v19.1 asks for the updated one`, /before v19\.1/.test(await p.textContent('#main')));
@@ -127,7 +131,7 @@ for (const [dn, vp] of [['iPhone', PHONE], ['Mac', MAC]]) {
   // I64: tapping the notice opens the file picker; choosing the rules file loads it right there
   await tab(p, 'review', vp);
   const [chooser] = await Promise.all([p.waitForEvent('filechooser'), p.click('#main [data-act=pickrules]')]);
-  await chooser.setFiles([{ name: 'rules_test.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(lineFile())) }]);
+  await chooser.setFiles([{ name: 'rules_test.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(lineFile())) }]); await confirmDialog(p);
   await p.waitForSelector('#sheet:not([hidden]) .report', { timeout: 10000 }); await p.keyboard.press('Escape'); await p.waitForTimeout(300);
   ok(`${dn}: I64 the notice opens the file picker and the file loads`, await p.evaluate(() => window.__app.state.agg.unknownLine.length === 0));
   await add('rules_test.json', answerOnlyFile());

@@ -60,6 +60,7 @@ export const cloud = { meta: null, key: null, token: null, status: 'off', msg: '
 export const cloudReady = () => !!cfg.googleClientId;
 export const tokenOk = () => cloud.token && cloud.token.exp > Date.now();
 export async function loadCloud() {
+  if (lock.demo) { cloud.meta = null; cloud.key = null; cloud.token = null; cloud.status = 'off'; return; } // no sync, no sign-in during the demo
   cloud.meta = await kvGet('cloud', null);
   cloud.key = await kvGet('cloudKey', null);
   cloud.token = await kvGet('gtoken', null);

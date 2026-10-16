@@ -3,13 +3,14 @@ import { aggregate, reconcile, DEFAULT_SETTINGS, emptyProfile, lines, SECTIONS, 
 import { buildWorkbook } from './xlsx.js';
 import * as C from './cloud.js';
 import { $, closeSheet, eur, h, hideBusy, sheet, showBusy, toast } from './util.js';
-import { all, clear, kvSet, lock, scheduleSeal, sealAll } from './storage.js';
+import { all, clear, kvGet, kvSet, lock, rawClear, rawDel, scheduleSeal, sealAll } from './storage.js';
+import { exitWithBiometrics, exitWithPassphrase, startDemo, startDemoLocked } from './demo.js';
 import { change, fresh, load, recompute, state, txById, undo } from './state.js';
 import { cfg, chooseVault, cloud, createVaultFlow, loadCloud, refreshStatus, saveCloudMeta, syncNow, unlockFlow } from './sync.js';
 import { BIO, ask, dialogDone, disableLock, enableLock, lockFallback, unlockApp } from './security.js';
 import { applyMotion, setMotion } from './motion.js';
 import { exportBackup, exportExcel, exportRules, importFiles } from './io.js';
-import { APP_VERSION, addUserRule, applyPalette, applyTheme, currentPalette, assign, budgetSheet, createLine, currentTheme, drillSheet, forgetView, goalSheet, isDark, manageSheet, monthsIn, newLineSheet, oneTimeSheet, overviewSheet, periodLabel, render, ruleMatches, ruleSheetHtml, savBalSheet, searchHits, searchResults, takePendingNew, txList } from './views.js';
+import { APP_VERSION, addUserRule, applyPalette, applyTheme, currentPalette, assign, budgetSheet, createLine, currentTheme, drillSheet, forgetView, goalSheet, isDark, ld, lineHtml, lineBack, lineSheet, undoReviewAnswer, manageSheet, monthsIn, newLineSheet, oneTimeSheet, overviewSheet, periodLabel, render, ruleMatches, ruleSheetHtml, savBalSheet, searchHits, searchResults, takePendingNew, txList } from './views.js';
 // ---------------- events ----------------
 // B40: no pinch zoom (iPhone and Mac Safari send gesture events; other browsers send ctrl + wheel).
 ['gesturestart', 'gesturechange'].forEach((ev) => document.addEventListener(ev, (e) => e.preventDefault(), { passive: false }));
@@ -21,6 +22,35 @@ function goMonths(section, month) {
   if (state.tab !== 'months') state.back = { tab: state.tab, label: TAB_LABEL[state.tab], y: window.scrollY };
   state.tab = 'months'; state.section = section; state.focusMonth = month || null;
   forgetView(); render(); window.scrollTo(0, 0);
+}
+// I65 Demo mode. Import, export, sync, backup and erase are off while it runs (and their buttons are not shown).
+const DEMO_OFF = new Set(['backup', 'excel', 'exportrules', 'pickrules', 'gsignin', 'syncnow', 'pickvault', 'lockvault', 'forgetvault', 'disconnect', 'wipe', 'lockoff', 'lockfallback', 'unlockapp']);
+async function startDemoFlow() {
+  if (!lock.on && !(cloud.meta && cloud.meta.fileId && cloud.key)) { toast('Turn on cloud sync or app lock first, so your data can be protected during the demo.'); return; }
+  let pass = null;
+  if (lock.on) {
+    if (!(await ask({ title: 'Start the demo?', text: `Your bookings, answers and rules stay encrypted and hidden. The app then shows made-up data only. To see your data again, exit the demo with ${BIO}.`, ok: 'Start demo' }))) return;
+  } else {
+    pass = await ask({ title: 'Start the demo?', text: 'Your bookings, answers and rules are encrypted with your vault passphrase and hidden. The app then shows made-up data only, and your Google sign-in on this device ends. To see your data again, exit the demo with the same passphrase.', input: '', password: true, ok: 'Start demo' });
+    if (!pass) return;
+  }
+  showBusy('Starting the demo…');
+  try { await startDemo(pass); } catch (err) { hideBusy(); toast(err.message); return; }
+  location.reload();
+}
+async function exitDemoFlow() {
+  const dm = await kvGet('demo', null); const locked = !!dm && dm.mode === 'lock';
+  const d = $('#dialog'); const close = () => { d.hidden = true; d.innerHTML = ''; d.onclick = null; };
+  d.innerHTML = `<div class="dialog-card" role="alertdialog" aria-modal="true" aria-labelledby="dlg-t"><h2 id="dlg-t">Exit the demo?</h2><p>Confirm it is you to show your own data again. Demo changes are discarded.</p>
+    <div class="stack">${locked ? `<button class="btn primary" data-xd="bio">Exit with ${BIO}</button><button class="link" data-xd="fallback">Use my passphrase instead</button>` : '<input id="xd-pass" type="password" placeholder="Vault passphrase" autocomplete="current-password"><button class="btn primary" data-xd="pass">Exit with passphrase</button>'}<button class="btn" data-xd="stay">Stay in demo</button></div><p class="fine bad" id="xd-msg" role="status"></p></div>`;
+  d.hidden = false;
+  d.onclick = async (e) => {
+    const k = e.target.closest('[data-xd]')?.dataset.xd; if (!k) return;
+    if (k === 'stay') { close(); return; }
+    if (k === 'fallback') { close(); await lockFallback(); return; }
+    try { if (k === 'bio') await exitWithBiometrics(); else await exitWithPassphrase($('#xd-pass').value); location.reload(); }
+    catch (err) { $('#xd-msg').textContent = err.message; }
+  };
 }
 document.addEventListener('click', async (e) => {
   const b = e.target.closest('button, [data-section], [data-cell], [data-drill], [data-pjump], [data-gosec], [data-summonth]');
@@ -64,6 +94,13 @@ document.addEventListener('click', async (e) => {
   }
   if (ds.tx) { const id = ds.tx; const html = () => { const t = txById(id); return `<h2>${h(t.vendor)}</h2>${txList([t])}<button class="btn" data-act="close">Done</button>`; }; sheet(html(), html); return; }
   if (ds.onetime) { oneTimeSheet(ds.onetime); return; }
+  if (ds.suggest) { // I68: one tap on a suggested line = the same as picking it in the list (honours the "Apply to every booking" switch)
+    const box = document.querySelector(`[data-txall="${CSS.escape(ds.sugtx)}"]`);
+    await assign(ds.sugtx, ds.suggest, !!(box && box.checked)); return;
+  }
+  if (ds.reviewundo !== undefined) { await undoReviewAnswer(+ds.reviewundo); return; }
+  if (ds.line) { lineSheet(ds.line); return; } // I69
+  if (ds.ldmonth !== undefined) { ld.month = ds.ldmonth || null; sheet(lineHtml(), lineHtml); return; }
   if (ds.passyes) { const id = ds.passyes; await change('Marked as forwarded abroad from savings', (s) => { s.txRules[id] = 'pt.sav'; }); return; }
   if (ds.dismiss) { const id = ds.dismiss; await change('Kept as regular spend', (s) => { (s.flagDismissed ||= {})[id] = true; }); return; }
   if (ds.deltrip) { const i = +ds.deltrip; await change('Trip removed', (s) => { s.trips.splice(i, 1); }); return; }
@@ -85,10 +122,14 @@ document.addEventListener('click', async (e) => {
     return;
   }
   const act = ds.act;
+  if (lock.demo && DEMO_OFF.has(act)) { toast('Not available in the demo.'); return; }
   if (act === 'backup') await exportBackup();
   else if (act === 'excel') await exportExcel();
   else if (act === 'exportrules') await exportRules();
   else if (act === 'pickrules') pickRulesFile();
+  else if (act === 'ldmovego') { if (ld.sel.size) { ld.moving = true; sheet(lineHtml(), lineHtml); } }
+  else if (act === 'ldback') lineBack();
+  else if (act === 'ldall') { ld.all = true; sheet(lineHtml(), lineHtml); }
   else if (act === 'manage') manageSheet();
   else if (act === 'newrule') sheet(ruleSheetHtml());
   else if (act === 'settings') { closeSheet(); state.back = { tab: state.tab, label: TAB_LABEL[state.tab], y: window.scrollY }; state.tab = 'settings'; render(); window.scrollTo(0, 0); } // I50: the gear on the phone
@@ -96,6 +137,9 @@ document.addEventListener('click', async (e) => {
     state.tab = 'months'; state.section = 'search'; render(); window.scrollTo(0, 0); const q = $('#q'); if (q) q.focus(); }
   else if (act === 'back') { const bk = state.back; state.back = null; if (bk) { state.tab = bk.tab; render(); window.scrollTo(0, bk.y || 0); } }
   else if (act === 'editmonths') { closeSheet(); goMonths(b.dataset.sec, b.dataset.month); }
+  else if (act === 'startdemo') await startDemoFlow();
+  else if (act === 'exitdemo') await exitDemoFlow();
+  else if (act === 'showdemo') { await startDemoLocked(); location.reload(); }
   else if (act === 'unlockapp') await unlockApp();
   else if (act === 'lockfallback') await lockFallback();
   else if (act === 'lockoff') { if (await ask({ title: 'Turn off app lock?', text: `The data on this device will no longer be encrypted with ${BIO}; your device's own lock still protects it.`, ok: 'Turn off', danger: true })) { await disableLock(); render(); toast('App lock is off'); } }
@@ -122,7 +166,7 @@ document.addEventListener('click', async (e) => {
   }
   else if (act === 'theme') { applyTheme(isDark() ? 'light' : 'dark'); render(); }
   else if (act === 'newline') newLineSheet(null);
-  else if (act === 'undo') { $('#toast').hidden = true; await undo(); }
+  else if (act === 'undo') { $('#toast').hidden = true; closeSheet(); await undo(); }
   else if (act === 'resetflags') { await change('One-time checks reset', (s) => { s.flagDismissed = {}; }); }
   else if (act === 'close') closeSheet();
   else if (act === 'goreview') { closeSheet(); state.tab = 'review'; render(); }
@@ -133,6 +177,25 @@ document.addEventListener('click', async (e) => {
     state.tx = []; state.statements = []; state.settings = fresh(); state.lastBackup = null; state.settingsBackup = null; state.undo = []; cloud.meta = null; cloud.key = null; cloud.token = null; refreshStatus(); recompute(); render();
   }
 });
+// I70: drop statements anywhere on the window (devices with a mouse or trackpad). A dropped file must never open in the browser, so every file drop is handled here.
+{
+  let depth = 0; const dz = $('#dropzone');
+  const files = (e) => e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files');
+  const openNow = () => !$('#dialog').hidden || !$('#sheet').hidden || !$('#busy').hidden; // a question, sheet or import is open
+  const canDrop = () => !(lock.on && !lock.key) && !lock.demo && !openNow() && matchMedia('(hover: hover) and (pointer: fine)').matches;
+  const wanted = (f) => /\.(pdf|csv|json)$/i.test(f.name) || /^(application\/pdf|text\/csv|application\/json)$/.test(f.type);
+  document.addEventListener('dragenter', (e) => { if (!files(e)) return; e.preventDefault(); depth++; if (canDrop()) dz.hidden = false; });
+  document.addEventListener('dragover', (e) => { if (!files(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = canDrop() ? 'copy' : 'none'; });
+  document.addEventListener('dragleave', (e) => { if (!files(e)) return; depth = Math.max(0, depth - 1); if (!depth) dz.hidden = true; });
+  document.addEventListener('drop', async (e) => {
+    if (!files(e)) return; e.preventDefault(); depth = 0; dz.hidden = true;
+    if (!canDrop()) { toast(lock.demo ? 'Not available in the demo.' : openNow() ? 'Close the open window first, then drop the files again.' : 'Unlock the app first to import files.'); return; }
+    const all = [...e.dataTransfer.files]; const ok = all.filter(wanted);
+    if (!ok.length) { toast('Only PDF and CSV statements, and rules or backup files can be imported.'); return; }
+    if (ok.length < all.length) toast(`${all.length - ok.length} other file${all.length - ok.length > 1 ? 's were' : ' was'} ignored.`);
+    await importFiles(ok);
+  });
+}
 // I64: the rules-file notice opens the file picker directly (must run inside the tap).
 function pickRulesFile() {
   const i = document.createElement('input'); i.type = 'file'; i.accept = '.json,application/json';
@@ -142,6 +205,11 @@ function pickRulesFile() {
 document.addEventListener('change', async (e) => {
   const t = e.target;
   if (t.dataset.act === 'import' && t.files.length) { await importFiles([...t.files]); t.value = ''; return; }
+  if (t.dataset.ldtick !== undefined) { // I69: tick bookings of a line to move them
+    if (t.checked) ld.sel.add(t.dataset.ldtick); else ld.sel.delete(t.dataset.ldtick);
+    const mv = $('#ld-move'); if (mv) { const n = ld.sel.size; mv.disabled = !n; mv.textContent = n ? `Move ${n} booking${n === 1 ? '' : 's'}…` : 'Tick bookings to move them'; }
+    return;
+  }
   if (t.dataset.skipempty !== undefined) { const on = t.checked; await change(on ? 'Months with nothing in them are skipped' : 'All months are shown', (s) => { s.skipEmptyMonths = on; }); return; }
   if (t.dataset.act === 'palette') { applyPalette(t.value); render(); return; }
   if (t.dataset.txline !== undefined && t.value) {
@@ -213,6 +281,11 @@ document.addEventListener('submit', async (e) => {
       for (const id of ids) s.txRules[id] = line;
       if (fd.get('future')) addUserRule(s, kw, line, '');
     });
+  } else if (f.dataset.act === 'ldmove') {
+    const line = fd.get('line'); const ids = [...ld.sel]; if (!line || !ids.length) return;
+    const from = ld.line; ld.sel = new Set(); ld.moving = false;
+    await change(`${ids.length} booking${ids.length === 1 ? '' : 's'} moved to ${lineLabel(line)}`, (s) => { for (const id of ids) s.txRules[id] = line; });
+    if (state.agg.rows.some((t) => t.line === from)) lineBack(); else closeSheet();
   } else if (f.dataset.act === 'lockon') {
     showBusy(`Setting up ${BIO}…`);
     try { await enableLock(fd.get('p')); toast('App lock is on'); } catch (err) { toast(err.message); } finally { hideBusy(); render(); }
@@ -248,7 +321,7 @@ document.addEventListener('keydown', (e) => {
   document.documentElement.dataset.palette = currentPalette(); applyTheme(currentTheme()); applyMotion();
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (currentTheme() === 'auto') applyTheme('auto'); });
   await load(); await loadCloud();
-  const red = C.readRedirect();
+  const red = lock.demo ? null : C.readRedirect();
   if (red && red.token) { cloud.token = { token: red.token, exp: red.exp }; await kvSet('gtoken', cloud.token); refreshStatus(); if (!cloud.meta || !cloud.meta.fileId) { state.tab = 'data'; try { await chooseVault(); } catch (e) { toast(e.message); } } }
   else if (red && red.error) { state.tab = 'data'; toast(red.error); }
   refreshStatus(); render();

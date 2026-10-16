@@ -15,7 +15,8 @@ export function lockView() {
   return `<section class="lockscreen"><img src="logo-icon.png" alt="" width="88" height="88"><h1>Finances is locked</h1>
     <p class="fine">Your data on this device is encrypted. Unlock with ${BIO}.</p>
     <button class="btn primary" data-act="unlockapp">Unlock</button>
-    <button class="link" data-act="lockfallback">Use my passphrase instead</button></section>`;
+    <button class="link" data-act="lockfallback">Use my passphrase instead</button>
+    <button class="btn demo-btn" data-act="showdemo">Show demo</button><p class="fine">Opens made-up data. Your data stays locked.</p></section>`;
 }
 export async function unlockApp() {
   try {
@@ -33,7 +34,7 @@ export async function unlockApp() {
 export async function lockFallback() {
   const ok = await ask({ title: 'Use your passphrase instead?', text: 'This turns off the app lock on this device and restores your data from your encrypted vault in Google Drive. You will sign in with Google and enter your vault passphrase. You can set up Face ID again afterwards.', ok: 'Continue', danger: true });
   if (!ok) return;
-  await rawDel('sealed'); await rawDel('lockMeta'); await rawClear('tx'); await rawClear('statements');
+  await rawDel('sealed'); await rawDel('lockMeta'); await rawClear('tx'); await rawClear('statements'); await rawDel('demo'); await rawDel('demoVault');
   location.reload();
 }
 export async function enableLock(pass) {
@@ -65,11 +66,11 @@ export function lockCard() {
 
 // ---------------- own dialogs (instead of browser pop-ups) ----------------
 export let dialogDone = null;
-export function ask({ title, text = '', ok = 'OK', danger = false, input = null, cancel = 'Cancel' }) {
+export function ask({ title, text = '', ok = 'OK', danger = false, input = null, cancel = 'Cancel', password = false }) {
   return new Promise((res) => {
     const d = $('#dialog');
     d.innerHTML = `<div class="dialog-card" role="alertdialog" aria-modal="true" aria-labelledby="dlg-t"><h2 id="dlg-t">${h(title)}</h2>${text ? `<p>${h(text)}</p>` : ''}
-      ${input !== null ? `<input id="dlg-in" type="text" value="${h(input)}" autocomplete="off">` : ''}
+      ${input !== null ? `<input id="dlg-in" type="${password ? 'password' : 'text'}" value="${h(input)}" autocomplete="${password ? 'current-password' : 'off'}"${password ? ' placeholder="Vault passphrase"' : ''}>` : ''}
       <div class="row"><button class="btn${danger ? ' warn' : ' primary'}" data-dlg="ok">${h(ok)}</button>${cancel ? `<button class="btn" data-dlg="cancel">${h(cancel)}</button>` : ''}</div></div>`;
     d.hidden = false; dialogDone = (v) => { d.hidden = true; d.innerHTML = ''; dialogDone = null; res(v); };
     setTimeout(() => (d.querySelector('#dlg-in') || d.querySelector('[data-dlg=ok]')).focus(), 30);

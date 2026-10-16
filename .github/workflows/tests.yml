@@ -22,7 +22,13 @@ jobs:
         run: node tests/unit.mjs
       - name: Browser checks in Chromium (iPhone and laptop size, light and dark; mock data only)
         run: node tests/e2e.mjs
+      - name: v20 checks in Chromium (Demo mode, Review, line detail, drop; mock data only)
+        run: node tests/v20.mjs
       - name: Browser checks in WebKit, Safari's engine (same checks)
         run: node tests/e2e.mjs
+        env:
+          BROWSER: webkit
+      - name: v20 checks in WebKit
+        run: node tests/v20.mjs
         env:
           BROWSER: webkit
