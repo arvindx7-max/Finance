@@ -68,8 +68,15 @@ async function purge() {
 // The protected copy must hold bookings, statements and the stored settings, as written by startDemo.
 const validPayload = (d) => !!d && Array.isArray(d.tx) && Array.isArray(d.statements) && !!d.kv && typeof d.kv === 'object' && !Array.isArray(d.kv);
 // pass: only needed with app lock off.
+// B61: with app lock on, the locked copy must exist and open before the demo starts (nothing is unsealed by the demo itself).
+const LOCKED_BAD = 'Your locked copy could not be checked on this device, so the demo was not started. Nothing was changed.';
+async function verifyLockedCopy(key) {
+  const blob = await kvGet('sealed', null);
+  if (!blob) throw new Error(LOCKED_BAD);
+  if (key) { try { await L.open(blob, key); } catch { throw new Error(LOCKED_BAD); } }
+}
 export async function startDemo(pass) {
-  if (lock.on) { await sealAll(); await rawDel('gtoken'); await rawPut('kv', [{ k: 'demo', v: { mode: 'lock' } }]); return; }
+  if (lock.on) { if (lock.key) await sealAll(); await verifyLockedCopy(lock.key); await rawDel('gtoken'); await rawPut('kv', [{ k: 'demo', v: { mode: 'lock' } }]); return; }
   await checkPassphrase(pass);
   const kv = {}; for (const k of KV_SEALED) kv[k] = await kvGet(k, null);
   const salt = C.newSalt(); const key = await C.deriveKey(pass, salt);
@@ -101,6 +108,9 @@ export async function exitWithBiometrics() {
   await L.unlock(meta); await rawDel('demo');
 }
 // Locked screen: "Show demo". Nothing is unsealed.
-export async function startDemoLocked() { await rawDel('gtoken'); await rawPut('kv', [{ k: 'demo', v: { mode: 'lock' } }]); }
+export async function startDemoLocked() { await verifyLockedCopy(null); await rawDel('gtoken'); await rawPut('kv', [{ k: 'demo', v: { mode: 'lock' } }]); }
+// I79: "See a demo" on a device with nothing to protect (no bookings, no settings, no vault): nothing is hidden, and leaving needs no proof.
+export const startDemoEmpty = () => rawPut('kv', [{ k: 'demo', v: { mode: 'empty' } }]);
+export const exitDemoEmpty = () => rawDel('demo');
 // Used by "Use my passphrase instead" while in demo: the lock fallback wipes the device, so the demo flag goes too.
 export const clearDemoFlag = async () => { await rawDel('demo'); await rawDel('demoVault'); };

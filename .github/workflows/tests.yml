@@ -24,11 +24,17 @@ jobs:
         run: node tests/e2e.mjs
       - name: v20 checks in Chromium (Demo mode, Review, line detail, drop; mock data only)
         run: node tests/v20.mjs
+      - name: v21 checks in Chromium (adaptive screens, start screens, Lock now, icons; mock data only)
+        run: node tests/v21.mjs
       - name: Browser checks in WebKit, Safari's engine (same checks)
         run: node tests/e2e.mjs
         env:
           BROWSER: webkit
       - name: v20 checks in WebKit
         run: node tests/v20.mjs
+        env:
+          BROWSER: webkit
+      - name: v21 checks in WebKit
+        run: node tests/v21.mjs
         env:
           BROWSER: webkit

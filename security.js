@@ -7,17 +7,11 @@ import { SEALED_KV, kvGet, lock, rawClear, rawDel, rawPut, sealAll } from './sto
 import { adopt, fresh, recompute, state, undo } from './state.js';
 import { cloud, refreshStatus, syncNow } from './sync.js';
 import { render } from './views.js';
+
 // ---------------- app lock (Face ID / Touch ID) ----------------
 export const isPhone = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
 export const BIO = isPhone ? 'Face ID' : 'Touch ID';
 export const DEVICE = isPhone ? 'phone' : 'device';
-export function lockView() {
-  return `<section class="lockscreen"><img src="logo-icon.png" alt="" width="88" height="88"><h1>Finances is locked</h1>
-    <p class="fine">Your data on this device is encrypted. Unlock with ${BIO}.</p>
-    <button class="btn primary" data-act="unlockapp">Unlock</button>
-    <button class="link" data-act="lockfallback">Use my passphrase instead</button>
-    <button class="btn demo-btn" data-act="showdemo">Show demo</button><p class="fine">Opens made-up data. Your data stays locked.</p></section>`;
-}
 export async function unlockApp() {
   try {
     const key = await L.unlock(lock.meta);
@@ -30,6 +24,12 @@ export async function unlockApp() {
     refreshStatus(); recompute(); render();
     if (cloud.status === 'synced') syncNow(true);
   } catch (e) { toast(e.message); }
+}
+// I77: Lock now. Saves the encrypted data, then reloads: the key and all open data are gone from memory and the locked screen shows.
+// In the demo it returns to the demo start screen. Cloud sync and the stored data are untouched.
+export async function lockNow() {
+  if (lock.on && lock.key) { try { await sealAll(); } catch (e) { toast(e.message); return; } }
+  location.reload();
 }
 export async function lockFallback() {
   const ok = await ask({ title: 'Use your passphrase instead?', text: 'This turns off the app lock on this device and restores your data from your encrypted vault in Google Drive. You will sign in with Google and enter your vault passphrase. You can set up Face ID again afterwards.', ok: 'Continue', danger: true });
@@ -58,7 +58,7 @@ export async function disableLock() {
   lock.key = null; lock.meta = null; lock.vaultRaw = null;
 }
 export function lockCard() {
-  if (lock.on) return `<section class="card"><h2>App lock</h2><p class="fine">On since ${deDate(lock.meta.since.slice(0, 10))}. The data on this device is encrypted and opens with ${BIO}. The app locks again after 5 minutes in the background.</p><button class="btn warn" data-act="lockoff">Turn off app lock</button></section>`;
+  if (lock.on) return `<section class="card"><h2>App lock</h2><p class="fine">On since ${deDate(lock.meta.since.slice(0, 10))}. The data on this device is encrypted and opens with ${BIO}. The app locks again after 5 minutes in the background.</p><button class="btn primary" data-act="locknow">Lock now</button><button class="btn warn" data-act="lockoff">Turn off app lock</button></section>`;
   const ready = cloud.meta && cloud.meta.fileId && cloud.key;
   return `<section class="card"><h2>App lock</h2><p class="fine">Encrypt the data on this device and open the app with ${BIO}.${ready ? ' Enter your vault passphrase to confirm it is you.' : ' Needs cloud sync, so your data can always be restored with your passphrase.'}</p>
     ${ready ? `<form class="stack" data-act="lockon"><label>Vault passphrase<input type="password" name="p" required autocomplete="current-password"></label><button class="btn primary">Turn on ${BIO} lock</button></form>` : ''}</section>`;
@@ -73,7 +73,7 @@ export function ask({ title, text = '', ok = 'OK', danger = false, input = null,
       ${input !== null ? `<input id="dlg-in" type="${password ? 'password' : 'text'}" value="${h(input)}" autocomplete="${password ? 'current-password' : 'off'}"${password ? ' placeholder="Vault passphrase"' : ''}>` : ''}
       <div class="row"><button class="btn${danger ? ' warn' : ' primary'}" data-dlg="ok">${h(ok)}</button>${cancel ? `<button class="btn" data-dlg="cancel">${h(cancel)}</button>` : ''}</div></div>`;
     d.hidden = false; dialogDone = (v) => { d.hidden = true; d.innerHTML = ''; dialogDone = null; res(v); };
-    setTimeout(() => (d.querySelector('#dlg-in') || d.querySelector('[data-dlg=ok]')).focus(), 30);
+    setTimeout(() => { const f = d.querySelector('#dlg-in') || d.querySelector('[data-dlg=ok]'); if (f) f.focus(); }, 30);
   });
 }
 

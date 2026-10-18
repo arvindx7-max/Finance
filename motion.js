@@ -1,6 +1,7 @@
 // v18 motion: how the screen changes when you switch tabs, sections or periods.
 // Only transform and opacity are animated (never left/width), so it stays smooth on the phone.
 // Settings → Motion: Full or Reduced (cross-fades only). Settings → Animation speed: Quick, Normal, Relaxed.
+import { lock } from './storage.js';
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 
@@ -17,7 +18,7 @@ export function applyMotion() {
 }
 export function setMotion(key, value) {
   motion[key] = value;
-  try { localStorage.setItem(key === 'mode' ? 'motion' : 'speed', value); } catch { /* storage blocked */ }
+  if (!lock.demo) { try { localStorage.setItem(key === 'mode' ? 'motion' : 'speed', value); } catch { /* storage blocked */ } } // B60: a demo never changes your stored look
   applyMotion();
 }
 export const reducedMotion = rm;

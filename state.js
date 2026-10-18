@@ -7,7 +7,7 @@ import { render } from './views.js';
 import { demoData, finishStart } from './demo.js';
 // ---------------- state ----------------
 export const fresh = () => structuredClone(DEFAULT_SETTINGS);
-export const state = { tx: [], statements: [], settings: fresh(), lastBackup: null, settingsBackup: null, reviewDone: [], tab: 'overview', period: { mode: 'month', key: null }, section: 'fixed', q: '', agg: null, undo: [] };
+export const state = { tx: [], statements: [], settings: fresh(), lastBackup: null, settingsBackup: null, reviewDone: [], demoStart: false, start: null, tab: 'overview', period: { mode: 'month', key: null }, section: 'fixed', q: '', agg: null, undo: [] };
 // Settings from any source (this device, unlock, restore, vault) pass through here. If the one-time
 // conversion changes anything, the old settings are kept first as 'settingsBackup' (never overwritten).
 export async function adopt(raw) {
@@ -21,7 +21,7 @@ export async function load() {
   const dm = await kvGet('demo', null);
   if (dm) { // demo mode: made-up data only; the real data (sealed) is not read
     await finishStart(dm);
-    lock.demo = true; lock.on = false; lock.meta = null;
+    lock.demo = true; lock.on = false; lock.meta = null; state.demoStart = true; // I78: a demo always opens on its start screen
     const d = demoData(); state.tx = d.tx; state.statements = d.statements; state.settings = await adopt(d.settings); state.settingsBackup = null; state.lastBackup = null; state.undo = [];
     recompute(); return;
   }

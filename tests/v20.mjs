@@ -8,7 +8,8 @@ const PASS = 'test-passphrase-only';
 const idb = (p) => p.evaluate(() => new Promise((res) => {
   const r = indexedDB.open('finance-insights'); r.onsuccess = () => { const d = r.result; const out = {}; let n = 0;
     ['tx', 'statements', 'kv'].forEach((s) => { const q = d.transaction(s).objectStore(s).getAllKeys(); q.onsuccess = () => { out[s] = q.result; if (++n === 3) { d.close(); res(out); } }; }); }; }));
-const reloaded = async (p) => { await p.reload(); await p.waitForSelector('#main .topbar, #main .lockscreen', { timeout: 15000 }); await p.waitForTimeout(500); };
+const enterDemo = async (p) => { await p.waitForSelector('#main .start [data-act=opendemo]'); await p.click('[data-act=opendemo]'); await p.waitForSelector('#main .topbar'); await p.waitForTimeout(500); };
+const reloaded = async (p) => { await p.reload(); await p.waitForSelector('#main .topbar, #main .start', { timeout: 15000 }); const od = await p.$('#main [data-act=opendemo]'); if (od) { await od.click(); await p.waitForSelector('#main .topbar'); } await p.waitForTimeout(500); };
 const setupVault = (p) => p.evaluate(async (pass) => { const C = await import('./cloud.js'); const salt = C.newSalt(); const key = await C.deriveKey(pass, salt); const cl = window.__app.cloud; cl.meta = { fileId: 'file_test', salt, iter: 310000 }; cl.key = key; }, PASS);
 const goSettings = async (p, vp) => { await p.click(vp === PHONE ? '[data-act=settings]' : '.tabbar [data-tab=settings]'); await p.waitForTimeout(250); };
 const goTab = async (p, t) => { await p.click(`.tabbar [data-tab=${t}]`); await p.waitForTimeout(250); };
@@ -31,7 +32,7 @@ for (const [dn, vp] of [['iPhone', PHONE], ['Mac', MAC]]) {
   // start
   await p.evaluate(() => window.__app.cloud.token = { token: 'token_test', exp: Date.now() + 1e6 }); await p.evaluate(async () => { const s = await import('./storage.js'); await s.kvSet('gtoken', { token: 'token_test', exp: Date.now() + 1e6 }); });
   await p.click('[data-act=startdemo]'); await p.fill('#dlg-in', PASS);
-  await Promise.all([p.waitForEvent('load'), p.click('[data-dlg=ok]')]); await p.waitForSelector('#main .topbar'); await p.waitForTimeout(500);
+  await Promise.all([p.waitForEvent('load'), p.click('[data-dlg=ok]')]); await enterDemo(p);
   const i = await idb(p); const d = await stat(p);
   ok(`${N} start: the plain copy of bookings and statements is gone`, i.tx.length === 0 && i.statements.length === 0, JSON.stringify(i));
   ok(`${N} start: settings, vault key and Google sign-in are gone from storage`, !['settings', 'cloud', 'cloudKey', 'gtoken', 'settingsBackup', 'undo', 'lastBackup'].some((k) => i.kv.includes(k)) && i.kv.includes('demoVault'), JSON.stringify(i.kv));
@@ -79,21 +80,21 @@ if (BROWSER === 'chromium') for (const [dn, vp] of [['iPhone', PHONE], ['Mac', M
   const err = await p.evaluate(async (pass) => { try { await (await import('./security.js')).enableLock(pass); window.__app.refresh(); return null; } catch (e) { return e.message; } }, PASS);
   ok(`${N} is on (test setup)`, err === null, String(err));
   await reloaded(p);
-  ok(`${N} locked screen offers "Show demo"`, !!(await p.$('.lockscreen [data-act=showdemo]')) && (await idb(p)).kv.includes('sealed'));
-  await Promise.all([p.waitForEvent('load'), p.click('[data-act=showdemo]')]); await p.waitForSelector('#main .topbar'); await p.waitForTimeout(500);
+  ok(`${N} locked screen offers "Show demo"`, !!(await p.$('.start [data-act=showdemo]')) && (await idb(p)).kv.includes('sealed'));
+  await Promise.all([p.waitForEvent('load'), p.click('[data-act=showdemo]')]); await enterDemo(p);
   const d = await stat(p); const i = await idb(p);
   ok(`${N} Show demo opens made-up data with one tap; the sealed data stays`, d.strip && d.months.includes('2026-09') && i.kv.includes('sealed') && i.kv.includes('lockMeta') && i.tx.length === 0, JSON.stringify(i.kv));
   await goTab(p, 'overview'); await p.click('.topbar [data-act=exitdemo]'); await p.waitForSelector('#dialog:not([hidden]) [data-xd]');
   ok(`${N} exit offers Face ID / Touch ID and the passphrase fallback`, !!(await p.$('[data-xd=bio]')) && !!(await p.$('[data-xd=fallback]')) && !(await p.$('#xd-pass')));
-  await Promise.all([p.waitForEvent('load'), p.click('[data-xd=bio]')]); await p.waitForSelector('#main .lockscreen, #main .topbar'); await p.waitForTimeout(500);
-  ok(`${N} exit with Face ID returns to the locked screen`, !!(await p.$('.lockscreen')) && !(await idb(p)).kv.includes('demo'));
+  await Promise.all([p.waitForEvent('load'), p.click('[data-xd=bio]')]); await p.waitForSelector('#main .start, #main .topbar'); await p.waitForTimeout(500);
+  ok(`${N} exit with Face ID returns to the locked screen`, !!(await p.$('.start [data-act=unlockapp]')) && !(await idb(p)).kv.includes('demo'));
   await p.click('[data-act=unlockapp]'); await p.waitForSelector('#main .topbar', { timeout: 15000 }); await p.waitForTimeout(400);
   const back = await stat(p);
   ok(`${N} unlocking shows your own data again`, back.tx === real.tx && !back.strip && JSON.stringify(back.months) === JSON.stringify(MONTHS), JSON.stringify(back));
   // starting from the unlocked app: one confirmation, no passphrase
   await goSettings(p, vp); await p.click('[data-act=startdemo]');
   ok(`${N} Start demo asks for confirmation only`, !(await p.$('#dlg-in')));
-  await Promise.all([p.waitForEvent('load'), p.click('[data-dlg=ok]')]); await p.waitForSelector('#main .topbar'); await p.waitForTimeout(500);
+  await Promise.all([p.waitForEvent('load'), p.click('[data-dlg=ok]')]); await enterDemo(p);
   ok(`${N} started from Settings`, (await stat(p)).strip && (await idb(p)).tx.length === 0);
   ok(`${N} no errors`, p.errs.length === 0, p.errs.join('; '));
   await p.context().close();
@@ -267,7 +268,7 @@ for (const [dn, vp] of [['iPhone', PHONE], ['Mac', MAC]]) {
   {
     const p = await open(b, port, vp); await setupVault(p);
     await goSettings(p, vp); await p.click('[data-act=startdemo]'); await p.fill('#dlg-in', PASS);
-    await Promise.all([p.waitForEvent('load'), p.click('[data-dlg=ok]')]); await p.waitForSelector('#main .topbar'); await p.waitForTimeout(500);
+    await Promise.all([p.waitForEvent('load'), p.click('[data-dlg=ok]')]); await enterDemo(p);
     await p.evaluate(async (pass) => { const C = await import('./cloud.js'); const S = await import('./storage.js'); const salt = C.newSalt(); const v = await C.seal({ tx: 'not a list' }, await C.deriveKey(pass, salt), salt); await S.rawPut('kv', [{ k: 'demoVault', v }]); }, PASS);
     await goSettings(p, vp); await p.click('#main [data-act=exitdemo]'); await p.fill('#xd-pass', PASS); await p.click('[data-xd=pass]'); await p.waitForTimeout(1500);
     const i = await idb(p);
