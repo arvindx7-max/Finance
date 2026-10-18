@@ -564,9 +564,6 @@ export function lineOptions(selected) {
   const more = order.map((sec) => { const ls = L.filter((l) => l.sec === sec && !used.has(l.id)); return ls.length ? `<optgroup label="More lines · ${h(SECTIONS[sec])}">${ls.map(opt).join('')}</optgroup>` : ''; }).join('');
   return mine + more
     + '<optgroup label="Something else"><option value="__new">＋ New line…</option></optgroup>';
-  // eslint-disable-next-line no-unreachable
-  return order.map((sec) => { const ls = L.filter((l) => l.sec === sec); return ls.length ? `<optgroup label="${h(SECTIONS[sec])}">${ls.map((l) => `<option value="${h(l.id)}"${l.id === selected ? ' selected' : ''}>${h(l.label)}</option>`).join('')}</optgroup>` : ''; }).join('')
-    + '<optgroup label="Something else"><option value="__new">＋ New line…</option></optgroup>';
 }
 export function txList(txs, allDefault = false, review = false) {
   return `<ul class="txs">${[...txs].sort((x, y) => y.date.localeCompare(x.date)).map((t) => {

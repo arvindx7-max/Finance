@@ -1,6 +1,6 @@
 // v21 (I78, I79): the start screens. Welcome (new device), Welcome back (restore from the encrypted vault),
 // Locked (every day with app lock on) and the demo start screen. Pure markup: the taps are handled in app.js.
-// Light and dark follow the device. Inside the app, the theme you chose stays.
+// Light and dark follow the theme chosen in Settings; with Auto (the default) they follow the device.
 import { h } from './util.js';
 import { BIO } from './security.js';
 import { cfg, cloud, cloudReady } from './sync.js';
@@ -8,7 +8,14 @@ import { state } from './state.js';
 
 const leaf = (style, size = 120, op = 0.85) => `<svg class="st-leaf" style="${style};width:${size}px;height:${size * 2}px;opacity:${op}" aria-hidden="true"><use href="#st-leaf"/></svg>`;
 const wave = '<svg class="st-waves" viewBox="0 0 400 190" preserveAspectRatio="none" aria-hidden="true"><path d="M0 70 C 90 20, 170 110, 260 70 S 400 40, 400 40 V190 H0Z" fill="var(--st-mist)" opacity=".75"/><path d="M0 120 C 110 80, 200 150, 300 110 S 400 100, 400 100 V190 H0Z" fill="var(--st-mist)"/></svg>';
-const corners = '<div class="st-corner" style="width:260px;height:260px;right:-90px;top:-90px;background:var(--st-mist)"></div><div class="st-corner" style="width:170px;height:170px;right:-30px;top:-40px;background:color-mix(in srgb,var(--st-mist) 60%,var(--st-paper))"></div><div class="st-corner" style="width:240px;height:240px;left:-110px;bottom:-60px;background:var(--st-mist);opacity:.7"></div><div class="st-corner" style="width:200px;height:200px;right:-70px;bottom:-80px;background:var(--st-peach)"></div>';
+// The corner shapes; pick() leaves some out (the demo start screen uses the 1st and 4th).
+const CORNERS = [
+  '<div class="st-corner" style="width:260px;height:260px;right:-90px;top:-90px;background:var(--st-mist)"></div>',
+  '<div class="st-corner" style="width:170px;height:170px;right:-30px;top:-40px;background:color-mix(in srgb,var(--st-mist) 60%,var(--st-paper))"></div>',
+  '<div class="st-corner" style="width:240px;height:240px;left:-110px;bottom:-60px;background:var(--st-mist);opacity:.7"></div>',
+  '<div class="st-corner" style="width:200px;height:200px;right:-70px;bottom:-80px;background:var(--st-peach)"></div>',
+];
+const corners = (pick = [0, 1, 2, 3]) => pick.map((i) => CORNERS[i]).join('');
 const lockIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>';
 const IC = {
   chart: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19h16"/><path d="M5 15l4-4 3 3 6-7"/><path d="M15 7h3v3"/></svg>',
@@ -81,7 +88,7 @@ export function restoreView() {
 
 // 2b. Locked: every day with app lock on.
 export function lockedView() {
-  return SPRITE + `<section class="start">${corners}${leaf('left:-8px;top:-34px;transform:rotate(-115deg)', 70)}${leaf('right:6px;bottom:30px;transform:rotate(14deg)', 64, 0.75)}
+  return SPRITE + `<section class="start">${corners()}${leaf('left:-8px;top:-34px;transform:rotate(-115deg)', 70)}${leaf('right:6px;bottom:30px;transform:rotate(14deg)', 64, 0.75)}
     <div class="st-col st-center"><img class="st-logo" src="logo-icon.png" alt="" style="width:80px;height:80px">
     <h1 class="st-serif" style="font-size:32px;margin-top:14px">Finances is locked</h1>
     <p class="st-lead" style="font-size:15.5px">Your data on this device is encrypted.<br>Unlock with ${BIO} to continue.</p>
@@ -94,7 +101,7 @@ export function lockedView() {
 
 // 2c. Demo start screen (I78): the same look, no sign-in of any kind.
 export function demoStartView() {
-  return SPRITE + `<section class="start">${corners.split('<div class="st-corner" style="width:170px')[0]}<div class="st-corner" style="width:200px;height:200px;right:-70px;bottom:-80px;background:var(--st-peach)"></div>${leaf('left:-8px;top:-34px;transform:rotate(-115deg)', 70)}${leaf('right:6px;bottom:30px;transform:rotate(14deg)', 64, 0.75)}
+  return SPRITE + `<section class="start">${corners([0, 3])}${leaf('left:-8px;top:-34px;transform:rotate(-115deg)', 70)}${leaf('right:6px;bottom:30px;transform:rotate(14deg)', 64, 0.75)}
     <div class="st-col st-center"><img class="st-logo" src="logo-icon.png" alt="" style="width:80px;height:80px">
     <h1 class="st-serif" style="font-size:32px;margin-top:14px">Finances</h1><p style="margin-top:10px"><span class="st-badge">Demo</span></p>
     <p class="st-lead" style="font-size:15.5px">Made-up data for showing the app.<br>Nothing you do here is saved.</p>

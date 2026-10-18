@@ -326,6 +326,9 @@ function vaultProblem(e) {
 }
 $('#sheet').addEventListener('click', (e) => { if (e.target.id === 'sheet') closeSheet(); });
 document.addEventListener('keydown', (e) => {
+  // A file picker dressed as a button (a label around a hidden file input): Enter and Space open it too.
+  const fb = (e.key === 'Enter' || e.key === ' ') && e.target.closest && e.target.closest('label[role=button]');
+  if (fb) { const inp = fb.querySelector('input[type=file]'); if (inp) { e.preventDefault(); inp.click(); return; } }
   if (e.key !== 'Escape') return;
   if (dialogDone) dialogDone(null); else if (!$('#sheet').hidden) closeSheet();
 });

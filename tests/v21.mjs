@@ -55,8 +55,10 @@ for (const [dn, vp] of [['iPhone', PHONE], ['Mac', MAC]]) {
   const N = `${dn}: demo`;
   const p = await open(b, port, vp, { load: false });
   ok(`${N}: I79 Welcome screen shows with no data`, !!(await p.$('#main .start.welcome')) && /Take control of your finances/.test(await text(p)));
+  const picked = await (async () => { await p.waitForSelector('#main .start label.st-btn[role=button]'); await p.focus('#main .start label.st-btn[role=button]'); const wait = p.waitForEvent('filechooser', { timeout: 5000 }).catch(() => null); await p.waitForTimeout(200); await p.keyboard.press('Enter'); const fc = await wait; return fc ? 'ok' : await p.evaluate(() => (document.activeElement || {}).outerHTML?.slice(0, 80) + ' | ' + document.querySelector('#main').innerHTML.slice(0, 120)); })();
+  ok(`${N}: Gemini 4 Enter on Get started opens the file picker`, picked === 'ok', picked);
   ok(`${N}: I79 Welcome hides tab bar`, await p.evaluate(() => document.body.classList.contains('locked')));
-  await p.evaluate(() => { localStorage.setItem('theme', 'light'); localStorage.setItem('palette', 'default'); });
+  await p.evaluate(() => { localStorage.setItem('theme', 'light'); localStorage.setItem('palette', 'classic'); });
   const ls0 = await p.evaluate(() => JSON.stringify(Object.entries(localStorage).sort()));
   await p.click('[data-act=seedemo]'); await p.waitForTimeout(800);
   const startOnce = async () => { const s = await p.$('#main .start [data-act=opendemo]'); if (s) { await s.click(); await p.waitForSelector('#main .topbar'); await p.waitForTimeout(400); } };
@@ -65,7 +67,8 @@ for (const [dn, vp] of [['iPhone', PHONE], ['Mac', MAC]]) {
   ok(`${N}: I78 the demo shows made-up data and the Demo strip`, !!(await p.$('.demo-strip')));
   // B60: change the look inside the demo; storage keys untouched
   await p.evaluate(() => { const s = document.querySelector('[data-act=settings]'); if (s) s.click(); });
-  await p.evaluate(async () => { const v = await import('./views.js'); if (v.applyTheme) v.applyTheme('dark'); if (v.applyPalette) v.applyPalette('ocean'); }).catch(() => {});
+  const look = await p.evaluate(async () => { const v = await import('./views.js'); v.applyTheme('dark'); v.applyPalette('lagoon'); return { theme: v.currentTheme(), palette: v.currentPalette(), attr: document.documentElement.dataset.palette }; });
+  ok(`${N}: B60 the demo shows the look chosen in the demo`, look.theme === 'dark' && look.palette === 'lagoon' && look.attr === 'lagoon', JSON.stringify(look));
   const ls1 = await p.evaluate(() => JSON.stringify(Object.entries(localStorage).sort()));
   ok(`${N}: B60 the demo look is not written to storage`, ls0 === ls1, ls0 + ' / ' + ls1);
   // reload returns to the start screen
