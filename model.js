@@ -6,7 +6,7 @@
 export const SECTIONS = {
   income: 'Earned income', fixed: 'Fixed / recurring', variable: 'Variable expenses', onetime: 'One-time items',
   abroad: 'Transfers abroad', passthrough: 'Forwarded transfers',
-  tosav: 'Moved to savings', fromsav: 'Top-ups from savings', offset: 'Offsetting pairs',
+  tosav: 'Moved to savings', fromsav: 'Top-ups from savings', offset: 'Offsetting pairs', wallet: 'Moved to wallet',
 };
 // Sections a user can pick when creating a new line.
 export const USER_SECTIONS = ['fixed', 'variable', 'onetime', 'income', 'abroad', 'tosav', 'fromsav'];
@@ -60,6 +60,7 @@ export const BASE_LINES = [
   L('sv.in', 'fromsav', 'Top-up from savings account', 'Savings movements'),
 
   L('off.other', 'offset', 'Offsetting pair'),
+  L('cash.wallet', 'wallet', 'Cash moved to wallet'),
 ];
 
 // Generic rules only: words that describe the kind of booking, never a particular shop or provider.
@@ -91,6 +92,9 @@ export const DEFAULT_SETTINGS = {
   budgets: {},       // variable group -> monthly budget in €
   goal: null,        // { year, amount } yearly savings goal
   savingsStart: null, // { month, amount }: savings account balance at the start of that month (for the estimate)
+  manualGone: {},    // I81: entries you typed in that were removed or merged with a statement booking (id -> true)
+  cash: null,        // I81: null = not asked yet, 'track' = ATM withdrawals move to a wallet and cash spending is entered, 'count' = ATM withdrawals count as spent
+  csvMaps: {},       // I83: column mapping of other banks' CSV files, remembered per file layout
   skipEmptyMonths: true, // Months: skip month columns with nothing in the section being viewed (Data tab switch)
   profile: null,     // the user's rules file
 };
@@ -186,6 +190,11 @@ export function lineMeta(id) {
 // Order: single-booking answer > rules-file "first" rules (one-time items, offsets) > your vendor answers
 //        > rules-file rules > generic rules.
 export function classify(tx, settings) {
+  const id = classifyBase(tx, settings);
+  // I81: once cash spending is tracked, an ATM withdrawal is money moved to a wallet, not spending.
+  return id === 'v.atm' && settings.cash === 'track' && tx.source !== 'manual' ? 'cash.wallet' : id;
+}
+function classifyBase(tx, settings) {
   const pick = (raw) => { const id = migrateId(raw); return lineMeta(id) ? applyTrip(id, tx, settings) : null; };
   if (settings.txRules[tx.id]) return pick(settings.txRules[tx.id]);
   const t = { ...tx, T: tx.text.toUpperCase() };
@@ -221,11 +230,36 @@ export function dateSummary(dates) {
   return Object.entries(counts).map(([d, n]) => deDate(d) + (n > 1 ? ` (x${n})` : '')).join(', ');
 }
 
+// I83: money moved between two of your own accounts at different banks shows up twice (out of one, into the other).
+// Such a pair cancels out: same amount, opposite sign, within four days, from different banks. A booking you answered yourself is left alone.
+const dayNo = (iso) => Math.round(Date.parse(iso) / 86400000);
+export function pairOwnTransfers(rows, settings) {
+  const bankOf = (t) => t.bank || '';
+  const cand = rows.filter((t) => t.source !== 'manual' && !(settings.txRules || {})[t.id]);
+  if (new Set(cand.map(bankOf)).size < 2) return 0;
+  const outs = cand.filter((t) => t.amount < 0).sort((a, b) => a.date.localeCompare(b.date));
+  const taken = new Set(); let n = 0;
+  for (const o of outs) {
+    let best = null;
+    for (const i of cand) {
+      if (i.amount <= 0 || taken.has(i) || bankOf(i) === bankOf(o) || Math.abs(i.amount + o.amount) > 0.005) continue;
+      const d = Math.abs(dayNo(i.date) - dayNo(o.date)); if (d > 4) continue;
+      if (!best || d < best.d) best = { i, d };
+    }
+    if (best) { taken.add(best.i); taken.add(o); o.line = best.i.line = 'off.other'; o.ownPair = best.i.id; best.i.ownPair = o.id; n++; }
+  }
+  return n;
+}
+
 export function aggregate(txs, settings) {
   applyProfile(settings.profile);
   TRIPS = settings.trips || [];
   const start = settings.startMonth || '0000-00';
-  const rows = txs.filter((t) => monthOf(t.date) >= start).map((t) => ({ ...t, line: classify(t, settings) }));
+  const gone = settings.manualGone || {};
+  // I81: cash spending paid from an ATM withdrawal only counts while ATM withdrawals are kept out of spending (settings.cash 'track').
+  const hidden = (t) => gone[t.id] || (t.source === 'manual' && t.manual && t.manual.atm && settings.cash !== 'track');
+  const rows = txs.filter((t) => monthOf(t.date) >= start && !hidden(t)).map((t) => ({ ...t, line: classify(t, settings) }));
+  pairOwnTransfers(rows, settings);
   const months = [...new Set(rows.map((t) => monthOf(t.date)))].sort();
   const cell = {};
   for (const t of rows) {
@@ -307,11 +341,13 @@ export function aggregate(txs, settings) {
   // I80: a section is in use once any booking in the data is on it.
   const inUse = {}; for (const t of rows) if (t.line) inUse[lineMeta(t.line).sec] = true;
   inUse.savings = !!(inUse.tosav || inUse.fromsav);
+  inUse.cashTracked = settings.cash === 'track';
   return { inUse, rows, months, cell, order, summary, review, unknownLine, orphanCount, oldRulesFile, flags, passFlags };
 }
 
 // Running-balance reconciliation: every statement must tie on its own and chain to the previous one.
-export function reconcile(txs, statements) {
+export function reconcile(txs0, statements) {
+  const txs = txs0.filter((t) => t.source !== 'manual' && !t.bank); // a statement only covers its own bank's bookings, never entries you typed in
   const st = [...statements].sort((a, b) => a.to.localeCompare(b.to));
   return st.map((s, i) => {
     const inRange = txs.filter((t) => t.date >= s.from && t.date <= s.to);

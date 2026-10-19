@@ -11,8 +11,9 @@ import { demoStartView, emptyView, lockedView } from './start.js';
 import { MOTIONS, SPEEDS, afterRender, beforeRender, motion, reducedMotion, resetMotion } from './motion.js';
 import { pdfStatements } from './io.js';
 import { suggestLines } from './suggest.js';
+import { cashCard, entryTag, isManual, walletCard } from './entries.js';
 // ---------------- insights tab ----------------
-export const APP_VERSION = 'v21';
+export const APP_VERSION = 'v21.1';
 export const pct = (x) => `${Math.round(x * 100)}%`;
 export function bar(ratio, tone) { const w = Math.min(100, Math.max(0, ratio * 100)); return `<span class="pbar ${tone}"><i style="width:${w.toFixed(1)}%"></i></span>`; }
 export function insightsView() {
@@ -80,7 +81,7 @@ export function insightsView() {
   // I67: insights that are set up lead; the ones not set up yet wait in one small card at the bottom.
   const todo = [[!sb && U.savings, 'Savings balance', 'Follow what is in your savings account', 'editsavbal'], [!anyBudget, 'Budgets', 'A monthly limit per category', 'editbudgets'], [!g, 'Savings goal', 'A target for the year and your pace', 'editgoal']].filter((x) => x[0]);
   const moreHtml = todo.length ? `<section class="card addmore"><h2>Add more insights</h2><ul>${todo.map(([, t, d, act]) => `<li><span>${t}<small>${d}</small></span><button class="btn" data-act="${act}">Set up</button></li>`).join('')}</ul></section>` : '';
-  return `${topbar('Insights', periodSub())}${periodPicker()}<div class="data-grid">${sb ? savHtml : ''}${anyBudget ? budgetHtml : ''}${g ? goalHtml : ''}${recHtml}${upHtml}${feeHtml}${patHtml}${moreHtml}</div>`;
+  return `${topbar('Insights', periodSub())}${periodPicker()}<div class="data-grid">${walletCard()}${sb ? savHtml : ''}${anyBudget ? budgetHtml : ''}${g ? goalHtml : ''}${recHtml}${upHtml}${feeHtml}${patHtml}${moreHtml}</div>`;
 }
 export function budgetSheet() {
   const groups = [...new Set(state.agg.order.filter((l) => l.sec === 'variable').map((l) => l.group || 'Other'))];
@@ -164,6 +165,7 @@ export function render() {
   const locked = lock.on && !lock.key; const demoStart = !!lock.demo && !!state.demoStart;
   const empty = !locked && !demoStart && !state.tx.length && state.tab !== 'data' && state.tab !== 'settings';
   document.body.classList.toggle('locked', locked || demoStart || empty);
+  { const fab = $('#fab'); if (fab) fab.hidden = locked || demoStart || empty || !!lock.demo; }
   if (locked) { main.innerHTML = lockedView(); lastView = null; resetMotion(); return; }
   if (demoStart) { main.innerHTML = demoStartView(); lastView = null; resetMotion(); return; }
   const first = lastView === null && !main.querySelector('.topbar'); beforeRender(main);
@@ -439,7 +441,7 @@ export function monthsView() {
   const seg = `<div class="seg" role="tablist">${SEG.filter(([k]) => k !== 'onetime' || U.onetime).map(([k, l]) => `<button role="tab" aria-selected="${state.section === k}" data-section="${k}">${l}</button>`).join('')}</div>`;
   if (state.section === 'search') return topbar('Months', 'Search') + seg + searchView();
   const a = state.agg;
-  const secs = state.section === 'income' ? ['income', 'abroad', 'passthrough', 'tosav', 'fromsav'] : [state.section];
+  const secs = state.section === 'income' ? ['income', 'abroad', 'passthrough', 'tosav', 'fromsav', 'wallet'] : [state.section];
   const ls = a.order.filter((l) => secs.includes(l.sec));
   // B52: months with nothing in this section are skipped (Data > "Skip months with nothing in them"); totals still cover every month.
   // B63: on the Income tab the totals underneath also count: a month with spending but no income is not empty.
@@ -557,7 +559,7 @@ export function lineHtml() {
 export function lineOptions(selected) {
   const trips = (state.settings.trips || []).map((t) => ({ id: `trip:${t.name}`, sec: 'variable', label: lineLabel(`trip:${t.name}`) }));
   const L = [...lines(), ...trips];
-  const order = ['fixed', 'variable', 'onetime', 'income', 'abroad', 'passthrough', 'tosav', 'fromsav', 'offset'];
+  const order = ['fixed', 'variable', 'onetime', 'income', 'abroad', 'passthrough', 'tosav', 'fromsav', 'offset', 'wallet'];
   const used = new Set((state.agg ? state.agg.rows : []).map((t) => t.line)); used.add(selected);
   const opt = (l) => `<option value="${h(l.id)}"${l.id === selected ? ' selected' : ''}>${h(l.label)}</option>`;
   const mine = order.map((sec) => { const ls = L.filter((l) => l.sec === sec && used.has(l.id)); return ls.length ? `<optgroup label="${h(SECTIONS[sec])}">${ls.map(opt).join('')}</optgroup>` : ''; }).join('');
@@ -570,13 +572,14 @@ export function txList(txs, allDefault = false, review = false) {
     // I68: in Review, up to three suggested lines are one tap; the full list stays under "Other line…"
     const sug = review && !t.line ? suggestLines(t, state.agg.rows, 8).filter((id) => lineMeta(id)).slice(0, 3) : [];
     return `<li>
-    <div><b>${h(t.vendor)}</b><span>${deDate(t.date)}${t.cardDate && t.cardDate !== t.date ? ` · paid ${deDate(t.cardDate)}` : ''}</span></div>
+    <div><b>${h(t.vendor)}</b><span>${deDate(t.date)}${t.cardDate && t.cardDate !== t.date ? ` · paid ${deDate(t.cardDate)}` : ''}${entryTag(t)}${t.ownPair ? ' · between your own accounts' : ''}${t.bank ? ` · ${h(t.bank)}` : ''}</span></div>
     <strong class="${t.amount < 0 ? '' : 'pos'}">${eur(t.amount)}</strong>
     ${sug.length ? `<div class="sugg"><span class="lbl">Suggested</span><div class="chips">${sug.map((id) => `<button data-suggest="${h(id)}" data-sugtx="${h(t.id)}">${h(lineLabel(id))}</button>`).join('')}</div></div>` : ''}
     <div class="fgroup">
       <label class="frow"><span>Line</span><select data-txline="${h(t.id)}">${t.line ? '' : `<option value="" selected>${sug.length ? 'Other line…' : 'Choose a line…'}</option>`}${lineOptions(t.line)}</select></label>
       <label class="frow sw"><span>Apply to every booking<small>Use this line for every booking from ${h(t.vendor)}</small></span><input type="checkbox" class="switch" data-txall="${h(t.id)}"${allDefault ? ' checked' : ''}></label>
       <label class="frow"><span>Note</span><input type="text" data-note="${h(t.id)}" value="${h((state.settings.notes || {})[t.id] || '')}" placeholder="e.g. birthday gift" maxlength="200"></label>
+      ${isManual(t) ? `<button class="link" data-delentry="${h(t.id)}">Remove this entry</button>` : ''}
     </div>
     ${t.amount < 0 ? `<button class="link small" data-onetime="${h(t.id)}">Make this a one-time item…</button>` : ''}
     <details><summary>Booking text</summary><p>${h(t.text)}</p></details></li>`; }).join('')}</ul>`;
@@ -740,6 +743,7 @@ export function settingsView() {
     <p class="fine">How long each animation takes. Applies to both Full and Reduced.</p>
   </section>
   <h2 class="group-head">Data settings</h2>
+  ${lock.demo ? '' : cashCard()}
   <section class="card">
     <h2>Months table</h2>
     <label class="frow sw"><span>Skip months with nothing in them<small>Months hides any month column that has no bookings in the section you are viewing. Totals still count every month.</small></span><input type="checkbox" class="switch" data-skipempty${s.skipEmptyMonths ? ' checked' : ''}></label>

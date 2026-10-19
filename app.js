@@ -10,6 +10,8 @@ import { cfg, chooseVault, cloud, createVaultFlow, loadCloud, refreshStatus, sav
 import { BIO, ask, dialogDone, disableLock, enableLock, lockFallback, lockNow, unlockApp } from './security.js';
 import { applyMotion, setMotion } from './motion.js';
 import { exportBackup, exportExcel, exportRules, importFiles } from './io.js';
+import { syncMappingForm } from './banks.js';
+import { countRest, entrySheet, removeEntry, saveEntry, syncEntryForm } from './entries.js';
 import { APP_VERSION, addUserRule, applyPalette, applyTheme, currentPalette, assign, budgetSheet, createLine, currentTheme, drillSheet, forgetView, goalSheet, isDark, ld, lineHtml, lineBack, lineSheet, undoReviewAnswer, manageSheet, monthsIn, newLineSheet, oneTimeSheet, overviewSheet, periodLabel, render, ruleMatches, ruleSheetHtml, savBalSheet, searchHits, searchResults, takePendingNew, txList } from './views.js';
 // ---------------- events ----------------
 // B40: no pinch zoom (iPhone and Mac Safari send gesture events; other browsers send ctrl + wheel).
@@ -24,7 +26,7 @@ function goMonths(section, month) {
   forgetView(); render(); window.scrollTo(0, 0);
 }
 // I65 Demo mode. Import, export, sync, backup and erase are off while it runs (and their buttons are not shown).
-const DEMO_OFF = new Set(['backup', 'excel', 'exportrules', 'pickrules', 'gsignin', 'syncnow', 'pickvault', 'lockvault', 'forgetvault', 'disconnect', 'wipe', 'lockoff', 'lockfallback', 'unlockapp']);
+const DEMO_OFF = new Set(['backup', 'excel', 'exportrules', 'pickrules', 'gsignin', 'syncnow', 'pickvault', 'lockvault', 'forgetvault', 'disconnect', 'wipe', 'lockoff', 'lockfallback', 'unlockapp', 'addentry', 'countrest']);
 // I79: a device with nothing on it has nothing to protect, so "See a demo" needs no passphrase there.
 const nothingToProtect = () => !lock.on && !state.tx.length && !state.statements.length && !(cloud.meta && cloud.meta.fileId) && JSON.stringify(state.settings) === JSON.stringify(fresh());
 async function startDemoFlow() {
@@ -88,7 +90,15 @@ document.addEventListener('click', async (e) => {
     sheet(html(), html);
     return;
   }
-  if (ds.dlg) { if (dialogDone) { const inp = $('#dlg-in'); dialogDone(ds.dlg === 'ok' ? (inp ? inp.value : true) : null); } return; }
+  if (ds.dlg) {
+    if (dialogDone) {
+      const inp = $('#dlg-in'); const fm = $('#dialog form[data-dlgform]');
+      let v = inp ? inp.value : true;
+      if (fm) { const fd = new FormData(fm); v = {}; for (const k of new Set(fd.keys())) { const all = fd.getAll(k); v[k] = all.length > 1 || k === 'desc' ? all : all[0]; } }
+      dialogDone(ds.dlg === 'ok' ? v : null);
+    }
+    return;
+  }
   if (ds.pjump) { const i = ds.pjump.indexOf('|'); state.period = { mode: ds.pjump.slice(0, i), key: ds.pjump.slice(i + 1) }; render(); return; }
   if (ds.delrule) { const i = ds.delrule.lastIndexOf('|'); const kw = ds.delrule.slice(0, i), sg = ds.delrule.slice(i + 1); await change(`Rule "${kw}" removed`, (s) => { s.profile.rules = s.profile.rules.filter((r) => !(r.mine && r.label === kw && (r.sign || '') === sg)); }); return; }
   if (ds.gosec) { goMonths(ds.gosec, state.period.mode === 'month' ? state.period.key : null); return; }
@@ -115,6 +125,7 @@ document.addEventListener('click', async (e) => {
   if (ds.dismiss) { const id = ds.dismiss; await change('Kept as regular spend', (s) => { (s.flagDismissed ||= {})[id] = true; }); return; }
   if (ds.deltrip) { const i = +ds.deltrip; await change('Trip removed', (s) => { s.trips.splice(i, 1); }); return; }
   if (ds.delvendor) { const k = ds.delvendor; await change('Vendor answer removed', (s) => { delete s.vendorRules[k]; }); return; }
+  if (ds.delentry) { await removeEntry(ds.delentry); return; }
   if (ds.deltx) { const k = ds.deltx; await change('Booking answer removed', (s) => { delete s.txRules[k]; }); return; }
   if (ds.renline) {
     const l = state.settings.profile.lines.find((x) => x.id === ds.renline);
@@ -133,7 +144,9 @@ document.addEventListener('click', async (e) => {
   }
   const act = ds.act;
   if (lock.demo && DEMO_OFF.has(act)) { toast('Not available in the demo.'); return; }
-  if (act === 'backup') await exportBackup();
+  if (act === 'addentry') entrySheet();
+  else if (act === 'countrest') await countRest();
+  else if (act === 'backup') await exportBackup();
   else if (act === 'excel') await exportExcel();
   else if (act === 'exportrules') await exportRules();
   else if (act === 'pickrules') pickRulesFile();
@@ -225,6 +238,9 @@ document.addEventListener('change', async (e) => {
     const mv = $('#ld-move'); if (mv) { const n = ld.sel.size; mv.disabled = !n; mv.textContent = n ? `Move ${n} booking${n === 1 ? '' : 's'}…` : 'Tick bookings to move them'; }
     return;
   }
+  if (t.dataset.cashtrack !== undefined) { const on = t.checked; await change(on ? 'Cash is tracked: ATM withdrawals move to a wallet' : 'ATM withdrawals count as spent', (s) => { s.cash = on ? 'track' : 'count'; }); return; }
+  if (t.form && t.form.dataset.act === 'addentry') { syncEntryForm(t.form); return; }
+  if (t.form && t.form.dataset.dlgform !== undefined && t.name === 'amountMode') { syncMappingForm(t.form); return; }
   if (t.dataset.skipempty !== undefined) { const on = t.checked; await change(on ? 'Months with nothing in them are skipped' : 'All months are shown', (s) => { s.skipEmptyMonths = on; }); return; }
   if (t.dataset.act === 'palette') { applyPalette(t.value); render(); return; }
   if (t.dataset.txline !== undefined && t.value) {
@@ -250,6 +266,7 @@ document.addEventListener('input', (e) => {
 document.addEventListener('submit', async (e) => {
   e.preventDefault();
   const f = e.target; const fd = new FormData(f);
+  if (f.dataset.act === 'addentry') { await saveEntry(fd); return; }
   if (f.dataset.act === 'addtrip') {
     if (fd.get('to') < fd.get('from')) { toast('The trip ends before it starts.'); return; }
     const trip = { name: fd.get('name').trim(), from: fd.get('from'), to: fd.get('to'), scope: fd.get('all') ? 'all' : 'dining' };
@@ -325,6 +342,7 @@ function vaultProblem(e) {
   sheet(`<h2>Couldn't connect to the vault</h2><p>${h(e.message || 'Something went wrong.')}</p><p class="fine">Details for a screenshot: ${h(String(code))} · ${new Date().toLocaleString('de-DE')} · ${h(APP_VERSION)}</p><button class="btn" data-act="close">Done</button>`);
 }
 $('#sheet').addEventListener('click', (e) => { if (e.target.id === 'sheet') closeSheet(); });
+$('#dialog').addEventListener('dlgopen', () => syncMappingForm($('#dialog form[data-dlgform]')));
 document.addEventListener('keydown', (e) => {
   // A file picker dressed as a button (a label around a hidden file input): Enter and Space open it too.
   const fb = (e.key === 'Enter' || e.key === ' ') && e.target.closest && e.target.closest('label[role=button]');
