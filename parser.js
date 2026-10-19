@@ -155,7 +155,7 @@ export function vendorOf(type, lines) {
 export function vendorKey(v) {
   return v.toUpperCase().replace(/[^A-Z ]/g, ' ').split(/\s+/).filter(Boolean).slice(0, 3).join(' ') || 'UNKNOWN';
 }
-function normalize(r) {
+export function normalize(r) {
   const text = [r.type, ...r.lines].join(' ').replace(/\s+/g, ' ');
   const vendor = vendorOf(r.type, r.lines);
   return { ...r, text, vendor, vkey: vendorKey(vendor), cardDate: cardDate(text) };

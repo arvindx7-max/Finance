@@ -57,6 +57,8 @@ and never derive mock data from real data (no "slightly changed" real names, ven
 | Transfers abroad | `Example Remit Ltd` |
 | Savings account | `Savings Test Account` |
 | Amounts (German format) | `12,50` · `45,90` · `-45,90` · `100,00` · `1.500,00` · `2.345,67` |
+| Second bank (v21 step 2) | `Example Bank Two`; file `statement_test_two_2026-04.csv`; its columns `Date`, `Description`, `Amount`; its bookings use only the vendors, amounts and dates above |
+| ATM withdrawal (v21 step 2) | booking type `Bargeldauszahlung`, text `Test`, amount `-100,00`, on the 15th |
 | Large amount (wide-column tests) | `12.345,67` |
 | Dates | Only the 1st and 15th of a month, from `01.03.2026` to `15.12.2027` (inside the app's tracking range) |
 | Statement files | `statement_test_2026-04.pdf`, `statement_test_2026-04.csv` |

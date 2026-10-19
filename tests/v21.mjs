@@ -105,7 +105,7 @@ if (BROWSER === 'chromium') for (const [dn, vp] of [['iPhone', PHONE], ['Mac', M
   ok('I75: old icon files are gone', ['apple-touch-icon.png', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'favicon-32.png'].every((f) => !fs.existsSync(path.join(ROOT, f))));
   const man = fs.readFileSync(path.join(ROOT, 'manifest.webmanifest'), 'utf8'), idx = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8'), sw = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8');
   ok('I75: manifest, index and service worker use the new names', files.slice(0, 4).filter((f) => f !== 'apple-touch-icon-v21.png').every((f) => man.includes(f)) && idx.includes('apple-touch-icon-v21.png') && idx.includes('favicon-v21-32.png') && files.every((f) => sw.includes(f)));
-  ok('I75: service worker version is fin-v21', /VERSION\s*=\s*'fin-v21'/.test(sw));
+  ok('I75: service worker version is fin-v21.1', /VERSION\s*=\s*'fin-v21.1'/.test(sw));
   const p = await (await b.newContext()).newPage(); await p.goto(`http://localhost:${port}/index.html`);
   const res = await p.evaluate(async () => { const img = new Image(); img.src = 'apple-touch-icon-v21.png'; await img.decode(); const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; const x = c.getContext('2d'); x.drawImage(img, 0, 0); const px = (X, Y) => [...x.getImageData(X, Y, 1, 1).data].join(','); const W = img.width - 1; return { corners: [px(0, 0), px(W, 0), px(0, W), px(W, W)], alpha: x.getImageData(0, 0, 1, 1).data[3] }; });
   ok('I75: icon corners have the same single colour and no transparency', new Set(res.corners).size === 1 && res.alpha === 255, JSON.stringify(res));

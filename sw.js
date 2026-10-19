@@ -1,7 +1,7 @@
 // Offline cache for the app's own files. Bump VERSION when any app file changes.
 // Only this site's files are cached: Google sign-in and Drive traffic always goes straight to the network.
-const VERSION = 'fin-v21';
-const FILES = ['./', './index.html', './app.js', './util.js', './storage.js', './state.js', './sync.js', './security.js', './io.js', './views.js', './parser.js', './model.js', './xlsx.js', './cloud.js', './insights.js', './suggest.js', './demo.js', './start.js', './lock.js', './motion.js', './icon-v21-maskable-512.png', './config.js', './logo-icon.png', './favicon-v21-32.png', './manifest.webmanifest',
+const VERSION = 'fin-v21.1';
+const FILES = ['./', './index.html', './app.js', './util.js', './storage.js', './state.js', './sync.js', './security.js', './io.js', './views.js', './parser.js', './model.js', './xlsx.js', './cloud.js', './insights.js', './suggest.js', './demo.js', './start.js', './entries.js', './banks.js', './lock.js', './motion.js', './icon-v21-maskable-512.png', './config.js', './logo-icon.png', './favicon-v21-32.png', './manifest.webmanifest',
   './pdf.min.mjs', './pdf.worker.min.mjs', './icon-v21-192.png', './icon-v21-512.png', './apple-touch-icon-v21.png'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', (e) => {

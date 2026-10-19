@@ -65,3 +65,13 @@ export const answerOnlyFile = () => ({ ...rulesFile(), vendorAnswers: { 'SHOP A'
 export const lineFile = () => ({ ...rulesFile(), lines: [{ id: 'c.test_line', sec: 'variable', label: 'Test line', group: 'Subscriptions & other' }], vendorAnswers: { 'SHOP A': 'c.test_line' } });
 // A rules file from before v19.1 (no catalog marker).
 export const oldRulesFile = () => { const r = rulesFile(); delete r.catalog; return r; };
+
+// ---- v21 step 2 (I81, I83): a bank statement with an ATM withdrawal, and a second bank with other column names. Ledger values only.
+const HEAD2 = 'Buchungstag;Wert;Umsatzart;Begünstigter / Auftraggeber;Verwendungszweck;IBAN;BIC;Kundenreferenz;Mandatsreferenz;Gläubiger ID;Fremde Gebühren;Betrag;Abweichender Empfänger;Anzahl der Aufträge;Anzahl der Schecks;Soll;Haben;Währung';
+const deN = (v) => v.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// rows: [day, type, counterparty, purpose, amount]
+export const bankCsv = (m, rows) => ['Umsatzliste;;;', `Konto;DE00 0000 0000 0000 0000 00;;`, '', HEAD2,
+  ...rows.map(([d, type, cp, purpose, a]) => { const date = `${d}.${m.slice(5)}.${m.slice(0, 4)}`; return [date, date, type, cp, purpose, 'DE00 0000 0000 0000 0000 00', '', '', '', '', '', deN(a), '', '', '', '', '', 'EUR'].join(';'); })].join('\n') + '\n';
+export const BASIC = (m) => [['01', 'Lohn/Gehalt', 'TEST EMPLOYER GMBH', 'TEST SALARY', 2345.67], ['01', 'Dauerauftrag', 'Shop B', 'RENT', -1500], ['15', 'Kartenzahlung', 'Test Supermarket', 'Test Supermarket', -45.9], ['15', 'Bargeldauszahlung', 'Example Bank', 'Test', -100]];
+// Second bank: comma separated, dot decimals, ISO dates.
+export const bank2Csv = (rows) => ['Date,Description,Amount', ...rows.map(([d, desc, a]) => `${d},${desc},${a.toFixed(2)}`)].join('\n') + '\n';

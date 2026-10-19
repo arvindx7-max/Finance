@@ -26,6 +26,8 @@ jobs:
         run: node tests/v20.mjs
       - name: v21 checks in Chromium (adaptive screens, start screens, Lock now, icons; mock data only)
         run: node tests/v21.mjs
+      - name: v21 step 2 checks in Chromium (entries, cash wallet, other banks' CSV; mock data only)
+        run: node tests/v21b.mjs
       - name: Browser checks in WebKit, Safari's engine (same checks)
         run: node tests/e2e.mjs
         env:
@@ -36,5 +38,9 @@ jobs:
           BROWSER: webkit
       - name: v21 checks in WebKit
         run: node tests/v21.mjs
+        env:
+          BROWSER: webkit
+      - name: v21 step 2 checks in WebKit
+        run: node tests/v21b.mjs
         env:
           BROWSER: webkit

@@ -6,8 +6,8 @@ import * as L from './lock.js';
 import { adopt, change, fresh, recompute, saveSettings, state } from './state.js';
 import { render } from './views.js';
 // ---------------- change timestamps (so two devices can merge) ----------------
-export const MAPS = [['vendorRules', 'v'], ['txRules', 't'], ['flagDismissed', 'f'], ['notes', 'n']];
-export const WHOLE = ['profile', 'trips', 'startMonth', 'budgets', 'goal', 'savingsStart'];
+export const MAPS = [['vendorRules', 'v'], ['txRules', 't'], ['flagDismissed', 'f'], ['notes', 'n'], ['manualGone', 'g'], ['manualKept', 'k'], ['csvMaps', 'c']];
+export const WHOLE = ['profile', 'trips', 'startMonth', 'budgets', 'goal', 'savingsStart', 'cash'];
 export const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 // Removed answers are kept as null so the removal itself can sync.
 export function stampDiff(before, after) {
@@ -43,10 +43,11 @@ export function mergeSettings(l, r) {
 }
 // Bookings: same id = same booking; otherwise matched by date + amount + vendor, count for count.
 export function mergeTx(local, remote) {
-  const ids = new Set(local.map((t) => t.id)); const key = (t) => `${t.date}|${t.amount}|${t.vkey}`;
-  const lc = {}; for (const t of local) lc[key(t)] = (lc[key(t)] || 0) + 1;
-  const groups = {}; for (const t of remote) (groups[key(t)] ||= []).push(t);
-  const add = [];
+  const ids = new Set(local.map((t) => t.id)); const key = (t) => `${t.bank || ''}|${t.date}|${t.amount}|${t.vkey}`;
+  const isMan = (t) => t.source === 'manual'; // entries you typed in are always told apart by id (two identical entries are two entries)
+  const lc = {}; for (const t of local) if (!isMan(t)) lc[key(t)] = (lc[key(t)] || 0) + 1;
+  const groups = {}; const add = [];
+  for (const t of remote) { if (!isMan(t)) (groups[key(t)] ||= []).push(t); else if (!ids.has(t.id)) { add.push(t); ids.add(t.id); } }
   for (const [k, rs] of Object.entries(groups)) {
     let room = rs.length - (lc[k] || 0);
     for (const t of rs) { if (room <= 0) break; if (ids.has(t.id)) continue; add.push(t); ids.add(t.id); room--; }

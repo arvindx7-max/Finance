@@ -8,6 +8,8 @@ import { adopt, fresh, pushUndo, recompute, saveSettings, state } from './state.
 import { live, markChanged, same, stampDiff } from './sync.js';
 import { DEVICE, ask } from './security.js';
 import { render, showImportReport } from './views.js';
+import { askMapping, guessMap, parseWithMap, sniff } from './banks.js';
+import { matchWaiting } from './entries.js';
 // ---------------- import ----------------
 export let pdfjs;
 export async function getPdfjs() {
@@ -19,11 +21,14 @@ export async function getPdfjs() {
 }
 // Dedupe across overlapping uploads: same booking date + amount, matched count-for-count.
 // Same source format: the vendor must match too. Different format (PDF vs CSV): date + amount is enough.
-export function mergeRows(existing, incoming) {
+export function mergeRows(existing0, incoming) {
+  const existing = existing0.filter((t) => t.source !== 'manual'); // entries you typed in are matched separately (entries.js)
+  // I83: bookings of different banks are never duplicates of each other, even with the same date and amount.
+  const kk = (t) => `${t.bank || ''}|${t.date}|${t.amount}`;
   const byDA = new Map();
-  for (const t of existing) { const k = `${t.date}|${t.amount}`; (byDA.get(k) || byDA.set(k, []).get(k)).push(t); }
+  for (const t of existing) { const k = kk(t); (byDA.get(k) || byDA.set(k, []).get(k)).push(t); }
   const groups = new Map();
-  for (const t of incoming) { const k = `${t.date}|${t.amount}`; (groups.get(k) || groups.set(k, []).get(k)).push(t); }
+  for (const t of incoming) { const k = kk(t); (groups.get(k) || groups.set(k, []).get(k)).push(t); }
   const added = []; let dup = 0;
   for (const [k, inc] of groups) {
     const ex = byDA.get(k) || [];
@@ -36,14 +41,14 @@ export function mergeRows(existing, incoming) {
       inc.slice(ex.length).forEach((t) => added.push(t)); dup += Math.min(ex.length, inc.length);
     }
   }
-  const used = new Set(existing.map((t) => t.id));
+  const used = new Set(existing0.map((t) => t.id));
   for (const t of added) { let n = 0; let id; do { id = `${t.date}|${t.amount}|${t.vkey}|${n++}`; } while (used.has(id)); used.add(id); t.id = id; }
   return { added, dup };
 }
 
 export async function importFiles(files) {
   if (lock.demo) { toast('Not available in the demo.'); return; }
-  const report = { files: [], added: 0, dup: 0, errors: [] };
+  const report = { files: [], added: 0, dup: 0, errors: [] }; const addedAll = [];
   // rules files first, so statements in the same batch are categorised with them
   files = [...files].sort((a, b) => (/\.json$/i.test(b.name) ? 1 : 0) - (/\.json$/i.test(a.name) ? 1 : 0));
   showBusy(`Reading ${files.length} file${files.length > 1 ? 's' : ''}…`);
@@ -64,24 +69,37 @@ export async function importFiles(files) {
           if (isRules) { report.files.push(`${f.name}: ${await loadRules(j)}`); report.undoable = true; continue; }
           report.files.push(`${f.name}: ${await restoreBackup(j)}`); continue;
         }
-        let rows, statement = null, checkpoint = null;
+        let rows, statement = null, checkpoint = null, bankName = '';
         if (/\.pdf$/i.test(f.name) || f.type === 'application/pdf') {
           const out = await parsePdf(await getPdfjs(), new Uint8Array(await f.arrayBuffer()));
           if (!out.statement.ties) throw new Error(`totals do not tie to the statement (opening ${eur(out.statement.open)}, closing ${eur(out.statement.close)}). Nothing was imported from this file.`);
           rows = out.rows; statement = out.statement;
         } else {
-          const out = parseCsv(await f.text()); rows = out.rows;
-          if (out.footer && out.footer.balance !== null) checkpoint = { id: `csv_${out.footer.date}`, kind: 'checkpoint', date: out.footer.date, close: out.footer.balance, source: 'csv' };
+          const text = await f.text();
+          if (/^"?Buchungstag"?;/m.test(text)) {
+            const out = parseCsv(text); rows = out.rows;
+            if (out.footer && out.footer.balance !== null) checkpoint = { id: `csv_${out.footer.date}`, kind: 'checkpoint', date: out.footer.date, close: out.footer.balance, source: 'csv' };
+          } else { // I83: any other bank's CSV: the columns are asked once and remembered
+            const table = sniff(text); if (!table) throw new Error('this does not look like a bank CSV (no table with a header row found)');
+            let map = state.settings.csvMaps && state.settings.csvMaps[table.fingerprint];
+            if (map && [map.dateCol, map.amountCol, map.debitCol, map.creditCol, ...map.desc].some((i) => i >= table.headers.length)) map = null;
+            const known = !!map;
+            if (!map) { hideBusy(); map = await askMapping(table, guessMap(table)); showBusy(`Reading ${files.length} file${files.length > 1 ? 's' : ''}…`); if (!map) throw new Error('not imported (you cancelled the column question)'); }
+            rows = parseWithMap(table, map).rows;
+            if (!known) { const before = JSON.parse(JSON.stringify(state.settings)); state.settings.csvMaps = { ...state.settings.csvMaps, [table.fingerprint]: map }; stampDiff(before, state.settings); await saveSettings(); }
+            bankName = map.bank;
+          }
         }
         const { added, dup } = mergeRows(state.tx, rows);
         await putMany('tx', added); state.tx.push(...added);
         for (const s of [statement, checkpoint].filter(Boolean)) { await putMany('statements', [s]); state.statements = state.statements.filter((x) => x.id !== s.id).concat(s); }
-        report.added += added.length; report.dup += dup;
-        report.files.push(`${statement ? `Statement ${deDate(statement.from)} – ${deDate(statement.to)}` : f.name}: ${added.length} new, ${dup} already stored`);
+        report.added += added.length; report.dup += dup; addedAll.push(...added);
+        report.files.push(`${statement ? `Statement ${deDate(statement.from)} – ${deDate(statement.to)}` : f.name}${bankName ? ` (${bankName})` : ''}: ${added.length} new, ${dup} already stored`);
       } catch (e) { report.errors.push(`${f.name}: ${e.message}`); }
     }
   } finally { hideBusy(); }
   recompute(); render();
+  if (addedAll.length) { try { const m = await matchWaiting(addedAll); if (m) report.files.push(m); } catch (e) { report.errors.push(`matching your entries: ${e.message}`); } }
   if (report.added || report.files.length) markChanged();
   showImportReport(report);
 }
@@ -111,7 +129,7 @@ export async function loadRules(j) {
 export function rulesPayload() {
   const s = state.settings;
   return { ...(s.profile || emptyProfile()), trips: s.trips, startMonth: s.startMonth,
-    vendorAnswers: Object.fromEntries(live(s.vendorRules)), bookingAnswers: Object.fromEntries(live(s.txRules)), dismissed: Object.fromEntries(live(s.flagDismissed)) };
+    vendorAnswers: Object.fromEntries(live(s.vendorRules)), bookingAnswers: Object.fromEntries(live(s.txRules).filter(([id]) => !(s.manualGone || {})[id])), dismissed: Object.fromEntries(live(s.flagDismissed)) };
 }
 export const exportRules = () => deliver(new Blob([JSON.stringify(rulesPayload(), null, 2)], { type: 'application/json' }), 'my-rules.json');
 

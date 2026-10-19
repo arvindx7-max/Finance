@@ -66,13 +66,16 @@ export function lockCard() {
 
 // ---------------- own dialogs (instead of browser pop-ups) ----------------
 export let dialogDone = null;
-export function ask({ title, text = '', ok = 'OK', danger = false, input = null, cancel = 'Cancel', password = false }) {
+// body: extra form markup (a <form data-dlgform>) whose fields come back as an object when the person confirms.
+export function ask({ title, text = '', ok = 'OK', danger = false, input = null, cancel = 'Cancel', password = false, body = '' }) {
   return new Promise((res) => {
     const d = $('#dialog');
     d.innerHTML = `<div class="dialog-card" role="alertdialog" aria-modal="true" aria-labelledby="dlg-t"><h2 id="dlg-t">${h(title)}</h2>${text ? `<p>${h(text)}</p>` : ''}
+      ${body ? `<form data-dlgform onsubmit="return false">${body}</form>` : ''}
       ${input !== null ? `<input id="dlg-in" type="${password ? 'password' : 'text'}" value="${h(input)}" autocomplete="${password ? 'current-password' : 'off'}"${password ? ' placeholder="Vault passphrase"' : ''}>` : ''}
       <div class="row"><button class="btn${danger ? ' warn' : ' primary'}" data-dlg="ok">${h(ok)}</button>${cancel ? `<button class="btn" data-dlg="cancel">${h(cancel)}</button>` : ''}</div></div>`;
-    d.hidden = false; dialogDone = (v) => { d.hidden = true; d.innerHTML = ''; dialogDone = null; res(v); };
+    d.hidden = false; if (body) d.dispatchEvent(new CustomEvent('dlgopen'));
+    dialogDone = (v) => { d.hidden = true; d.innerHTML = ''; dialogDone = null; res(v); };
     setTimeout(() => { const f = d.querySelector('#dlg-in') || d.querySelector('[data-dlg=ok]'); if (f) f.focus(); }, 30);
   });
 }
