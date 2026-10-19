@@ -4,10 +4,10 @@ import { buildWorkbook } from './xlsx.js';
 import * as C from './cloud.js';
 import { $, closeSheet, eur, h, hideBusy, sheet, showBusy, toast } from './util.js';
 import { all, clear, kvGet, kvSet, lock, rawClear, rawDel, scheduleSeal, sealAll } from './storage.js';
-import { exitWithBiometrics, exitWithPassphrase, startDemo, startDemoLocked } from './demo.js';
+import { clearDemoFlag, exitDemoEmpty, exitWithBiometrics, exitWithPassphrase, startDemo, startDemoEmpty, startDemoLocked } from './demo.js';
 import { change, fresh, load, recompute, state, txById, undo } from './state.js';
 import { cfg, chooseVault, cloud, createVaultFlow, loadCloud, refreshStatus, saveCloudMeta, syncNow, unlockFlow } from './sync.js';
-import { BIO, ask, dialogDone, disableLock, enableLock, lockFallback, unlockApp } from './security.js';
+import { BIO, ask, dialogDone, disableLock, enableLock, lockFallback, lockNow, unlockApp } from './security.js';
 import { applyMotion, setMotion } from './motion.js';
 import { exportBackup, exportExcel, exportRules, importFiles } from './io.js';
 import { APP_VERSION, addUserRule, applyPalette, applyTheme, currentPalette, assign, budgetSheet, createLine, currentTheme, drillSheet, forgetView, goalSheet, isDark, ld, lineHtml, lineBack, lineSheet, undoReviewAnswer, manageSheet, monthsIn, newLineSheet, oneTimeSheet, overviewSheet, periodLabel, render, ruleMatches, ruleSheetHtml, savBalSheet, searchHits, searchResults, takePendingNew, txList } from './views.js';
@@ -25,7 +25,10 @@ function goMonths(section, month) {
 }
 // I65 Demo mode. Import, export, sync, backup and erase are off while it runs (and their buttons are not shown).
 const DEMO_OFF = new Set(['backup', 'excel', 'exportrules', 'pickrules', 'gsignin', 'syncnow', 'pickvault', 'lockvault', 'forgetvault', 'disconnect', 'wipe', 'lockoff', 'lockfallback', 'unlockapp']);
+// I79: a device with nothing on it has nothing to protect, so "See a demo" needs no passphrase there.
+const nothingToProtect = () => !lock.on && !state.tx.length && !state.statements.length && !(cloud.meta && cloud.meta.fileId) && JSON.stringify(state.settings) === JSON.stringify(fresh());
 async function startDemoFlow() {
+  if (nothingToProtect()) { try { await startDemoEmpty(); } catch (err) { toast(err.message); return; } location.reload(); return; }
   if (!lock.on && !(cloud.meta && cloud.meta.fileId && cloud.key)) { toast('Turn on cloud sync or app lock first, so your data can be protected during the demo.'); return; }
   let pass = null;
   if (lock.on) {
@@ -40,14 +43,21 @@ async function startDemoFlow() {
 }
 async function exitDemoFlow() {
   const dm = await kvGet('demo', null); const locked = !!dm && dm.mode === 'lock';
+  if (dm && dm.mode === 'empty') { await exitDemoEmpty(); location.reload(); return; } // nothing was hidden: no proof needed
   const d = $('#dialog'); const close = () => { d.hidden = true; d.innerHTML = ''; d.onclick = null; };
   d.innerHTML = `<div class="dialog-card" role="alertdialog" aria-modal="true" aria-labelledby="dlg-t"><h2 id="dlg-t">Exit the demo?</h2><p>Confirm it is you to show your own data again. Demo changes are discarded.</p>
-    <div class="stack">${locked ? `<button class="btn primary" data-xd="bio">Exit with ${BIO}</button><button class="link" data-xd="fallback">Use my passphrase instead</button>` : '<input id="xd-pass" type="password" placeholder="Vault passphrase" autocomplete="current-password"><button class="btn primary" data-xd="pass">Exit with passphrase</button>'}<button class="btn" data-xd="stay">Stay in demo</button></div><p class="fine bad" id="xd-msg" role="status"></p></div>`;
+    <div class="stack">${locked ? `<button class="btn primary" data-xd="bio">Exit with ${BIO}</button><button class="link" data-xd="fallback">Use my passphrase instead</button>` : '<input id="xd-pass" type="password" placeholder="Vault passphrase" autocomplete="current-password"><button class="btn primary" data-xd="pass">Exit with passphrase</button><button class="link" data-xd="restore">Restore from Google Drive instead</button>'}<button class="btn" data-xd="stay">Stay in demo</button></div><p class="fine bad" id="xd-msg" role="status"></p></div>`;
   d.hidden = false;
   d.onclick = async (e) => {
     const k = e.target.closest('[data-xd]')?.dataset.xd; if (!k) return;
     if (k === 'stay') { close(); return; }
     if (k === 'fallback') { close(); await lockFallback(); return; }
+    if (k === 'restore') { // B61: forgot the passphrase, or the protected copy cannot be opened
+      close();
+      if (!(await ask({ title: 'Restore from Google Drive instead?', text: 'This ends the demo on this device without opening your protected copy. Changes made on this device that were not yet synced to Google Drive are lost. Afterwards you sign in with Google and enter your vault passphrase to bring your data back.', ok: 'Restore from Google Drive', danger: true }))) return;
+      try { await clearDemoFlag(); location.reload(); } catch (err) { toast(err.message); }
+      return;
+    }
     try { if (k === 'bio') await exitWithBiometrics(); else await exitWithPassphrase($('#xd-pass').value); location.reload(); }
     catch (err) { $('#xd-msg').textContent = err.message; }
   };
@@ -139,7 +149,12 @@ document.addEventListener('click', async (e) => {
   else if (act === 'editmonths') { closeSheet(); goMonths(b.dataset.sec, b.dataset.month); }
   else if (act === 'startdemo') await startDemoFlow();
   else if (act === 'exitdemo') await exitDemoFlow();
-  else if (act === 'showdemo') { await startDemoLocked(); location.reload(); }
+  else if (act === 'showdemo') { try { await startDemoLocked(); location.reload(); } catch (err) { toast(err.message); } }
+  else if (act === 'seedemo') await startDemoFlow();
+  else if (act === 'opendemo') { state.demoStart = false; render(); window.scrollTo(0, 0); }
+  else if (act === 'locknow') await lockNow();
+  else if (act === 'startrestore') { state.start = 'restore'; render(); }
+  else if (act === 'startback') { state.start = null; render(); }
   else if (act === 'unlockapp') await unlockApp();
   else if (act === 'lockfallback') await lockFallback();
   else if (act === 'lockoff') { if (await ask({ title: 'Turn off app lock?', text: `The data on this device will no longer be encrypted with ${BIO}; your device's own lock still protects it.`, ok: 'Turn off', danger: true })) { await disableLock(); render(); toast('App lock is off'); } }
@@ -311,6 +326,9 @@ function vaultProblem(e) {
 }
 $('#sheet').addEventListener('click', (e) => { if (e.target.id === 'sheet') closeSheet(); });
 document.addEventListener('keydown', (e) => {
+  // A file picker dressed as a button (a label around a hidden file input): Enter and Space open it too.
+  const fb = (e.key === 'Enter' || e.key === ' ') && e.target.closest && e.target.closest('label[role=button]');
+  if (fb) { const inp = fb.querySelector('input[type=file]'); if (inp) { e.preventDefault(); inp.click(); return; } }
   if (e.key !== 'Escape') return;
   if (dialogDone) dialogDone(null); else if (!$('#sheet').hidden) closeSheet();
 });

@@ -6,18 +6,20 @@ import { $, daysSince, eur, h, n2, refreshSheet, sheet } from './util.js';
 import { all, lock } from './storage.js';
 import { change, state, txById } from './state.js';
 import { cloud, cloudCard, cloudPill, cloudReady, live, same } from './sync.js';
-import { DEVICE, isPhone, lockCard, lockView } from './security.js';
+import { DEVICE, isPhone, lockCard } from './security.js';
+import { demoStartView, emptyView, lockedView } from './start.js';
 import { MOTIONS, SPEEDS, afterRender, beforeRender, motion, reducedMotion, resetMotion } from './motion.js';
 import { pdfStatements } from './io.js';
 import { suggestLines } from './suggest.js';
 // ---------------- insights tab ----------------
-export const APP_VERSION = 'v20';
+export const APP_VERSION = 'v21';
 export const pct = (x) => `${Math.round(x * 100)}%`;
 export function bar(ratio, tone) { const w = Math.min(100, Math.max(0, ratio * 100)); return `<span class="pbar ${tone}"><i style="width:${w.toFixed(1)}%"></i></span>`; }
 export function insightsView() {
   ensurePeriod();
   const p = state.period; const ms = monthsIn(p.key, p.mode); const a = state.agg; const s = state.settings;
   const label = h(periodLabel(p.key, p.mode));
+  const U = a.inUse || {}; const G = new Set(a.order.filter((l) => l.sec === 'variable').map((l) => l.group));
   // budgets
   const bs = I.budgets(a, ms, s.budgets);
   const anyBudget = bs.some((b) => b.limit);
@@ -33,7 +35,7 @@ export function insightsView() {
     : `<p class="fine">Set a target for the year to see your progress and where your current pace lands you in December.</p><button class="btn" data-act="editgoal">Set a goal</button>`}</section>`;
   // recurring
   const r = I.recurring(a);
-  const recHtml = `<section class="card wide"><h2>Recurring costs and subscriptions</h2>
+  const recHtml = !r.items.length ? '' : `<section class="card wide"><h2>Recurring costs and subscriptions</h2>
     <p class="fine">About <b>${eur(r.yearly)}</b> a year, ${eur(r.yearly / 12)} a month on average.</p>
     <ul class="rec">${r.items.map((i) => `<li><div><b>${h(i.label)}</b><small>${i.multi ? 'several charges a month' : `last ${eur(i.last)} on ${deDate(i.lastDate)}`}</small>${i.change ? `<em class="flag ${i.change.to > i.change.from ? 'up' : 'down'}">Price ${i.change.to > i.change.from ? 'up' : 'down'}: ${eur(i.change.from)} → ${eur(i.change.to)}</em>` : ''}${i.isNew ? '<em class="flag new">New</em>' : ''}</div><span class="num">${eur(i.yearly)}<small>/year</small></span></li>`).join('')}</ul></section>`;
   // upcoming
@@ -42,18 +44,23 @@ export function insightsView() {
     <p class="fine">Fixed payments expected: <b>${eur(u.total)}</b>. Keep at least this in the account on the 1st.</p>
     <ul class="upc">${u.items.map((i) => `<li><span class="day num">${i.day ? `${i.day}.` : '—'}</span><span>${h(i.label)}${i.every > 1 ? ` <small>every ${i.every} months</small>` : ''}${i.multi ? ' <small>several charges</small>' : ''}</span><b class="num">${eur(i.amount)}</b></li>`).join('')}</ul></section>` : '';
   // fees
-  const f = I.fees(a, ms);
-  const feeHtml = `<section class="card"><h2>Bank and card fees <small>${label}</small></h2>
+  const f = I.fees(a, ms); const anyFee = I.fees(a, a.months).total > 0;
+  const feeHtml = !anyFee ? '' : `<section class="card"><h2>Bank and card fees <small>${label}</small></h2>
     ${f.total ? `<p class="fine"><b>${eur(f.total)}</b> in fees: ${f.atm.n ? `${f.atm.n} ATM withdrawal${f.atm.n > 1 ? 's' : ''} ${eur(f.atm.sum)}` : ''}${f.atm.n && (f.card.n || f.bank.n) ? ', ' : ''}${f.card.n ? `foreign card fees ${eur(f.card.sum)}` : ''}${f.card.n && f.bank.n ? ', ' : ''}${f.bank.n ? `account fees ${eur(f.bank.sum)}` : ''}.</p>
-      ${f.atm.n ? '<p class="tip">ATM fees come from withdrawing at other banks\' machines. Cash Group ATMs (Deutsche Bank, Commerzbank, HypoVereinsbank, Postbank) are free for you, and supermarkets can pay out cash at the till.</p>' : ''}
-      ${f.card.n ? '<p class="tip">Card fees are charged on payments in other currencies (e.g. US dollars for Claude).</p>' : ''}
+      ${f.atm.n ? '<p class="tip">ATM fees usually come from withdrawing at other banks\' machines. Your own bank\'s machines are often free, and many supermarkets pay out cash at the till.</p>' : ''}
+      ${f.card.n ? '<p class="tip">Card fees are charged on payments in other currencies (for example US dollars).</p>' : ''}
       <details><summary>${f.items.length} fee${f.items.length > 1 ? 's' : ''}</summary><ul class="feelist">${f.items.map((x) => `<li><span>${deDate(x.date)} ${h(x.what)}</span><b class="num">${eur(x.v)}</b></li>`).join('')}</ul></details>`
     : '<p class="fine">No fees in this period.</p>'}</section>`;
   // patterns
   const pt = I.patterns(a, ms);
+  // I80: a tile shows only for categories this person has.
+  const tiles = [];
+  if (G.has('Supermarkets') || G.has('Bakery & butcher')) tiles.push(`<div><b class="num">${pct(pt.grocShare)}</b><span>groceries &amp; bakery<br>${eur(pt.groceries)}</span></div>`);
+  if (G.has('Restaurants & dining')) tiles.push(`<div><b class="num">${pct(pt.eatShare)}</b><span>eating out<br>${eur(pt.eatingOut)}</span></div>`);
+  if (G.has('Supermarkets')) tiles.push(`<div><b class="num">${eur(pt.avgGroceryBill)}</b><span>average supermarket bill<br>${pt.perMonthGroceryTrips} trips a month</span></div>`);
   const maxDay = Math.max(1, ...pt.days.map((d) => d.amount));
   const patHtml = `<section class="card"><h2>Spending patterns <small>${label}</small></h2>
-    ${pt.total ? `<div class="shares"><div><b class="num">${pct(pt.grocShare)}</b><span>groceries &amp; bakery<br>${eur(pt.groceries)}</span></div><div><b class="num">${pct(pt.eatShare)}</b><span>eating out<br>${eur(pt.eatingOut)}</span></div><div><b class="num">${eur(pt.avgGroceryBill)}</b><span>average supermarket bill<br>${pt.perMonthGroceryTrips} trips a month</span></div></div>
+    ${pt.total ? `${tiles.length ? `<div class="shares">${tiles.join('')}</div>` : ''}
       <h3>Card spending by weekday</h3><ul class="wd">${pt.days.map((d) => `<li class="${d.day === pt.busiest ? 'top' : ''}"><i style="height:${(d.amount / maxDay * 100).toFixed(0)}%"></i><span>${d.day.slice(0, 2)}</span></li>`).join('')}</ul>
       <p class="fine">Most card spending happens on ${pt.busiest}s.</p>` : '<p class="fine">No variable spending in this period.</p>'}</section>`;
   const sb = I.savingsBalance(a, s.savingsStart);
@@ -71,7 +78,7 @@ export function insightsView() {
       <button class="link" data-act="editsavbal">Change starting balance</button></section>`;
   }
   // I67: insights that are set up lead; the ones not set up yet wait in one small card at the bottom.
-  const todo = [[!sb, 'Savings balance', 'Follow what is in your savings account', 'editsavbal'], [!anyBudget, 'Budgets', 'A monthly limit per category', 'editbudgets'], [!g, 'Savings goal', 'A target for the year and your pace', 'editgoal']].filter((x) => x[0]);
+  const todo = [[!sb && U.savings, 'Savings balance', 'Follow what is in your savings account', 'editsavbal'], [!anyBudget, 'Budgets', 'A monthly limit per category', 'editbudgets'], [!g, 'Savings goal', 'A target for the year and your pace', 'editgoal']].filter((x) => x[0]);
   const moreHtml = todo.length ? `<section class="card addmore"><h2>Add more insights</h2><ul>${todo.map(([, t, d, act]) => `<li><span>${t}<small>${d}</small></span><button class="btn" data-act="${act}">Set up</button></li>`).join('')}</ul></section>` : '';
   return `${topbar('Insights', periodSub())}${periodPicker()}<div class="data-grid">${sb ? savHtml : ''}${anyBudget ? budgetHtml : ''}${g ? goalHtml : ''}${recHtml}${upHtml}${feeHtml}${patHtml}${moreHtml}</div>`;
 }
@@ -153,13 +160,17 @@ export function render() {
   const n = state.agg.review.length + state.agg.flags.length + state.agg.passFlags.length;
   $('#review-badge').textContent = n; $('#review-badge').hidden = !n;
   const main = $('#main');
-  document.body.classList.toggle('locked', lock.on && !lock.key);
-  if (lock.on && !lock.key) { main.innerHTML = lockView(); lastView = null; resetMotion(); return; }
+  // The start screens (locked, demo start, welcome) use the whole screen: no tab bar, no side bar.
+  const locked = lock.on && !lock.key; const demoStart = !!lock.demo && !!state.demoStart;
+  const empty = !locked && !demoStart && !state.tx.length && state.tab !== 'data' && state.tab !== 'settings';
+  document.body.classList.toggle('locked', locked || demoStart || empty);
+  if (locked) { main.innerHTML = lockedView(); lastView = null; resetMotion(); return; }
+  if (demoStart) { main.innerHTML = demoStartView(); lastView = null; resetMotion(); return; }
   const first = lastView === null && !main.querySelector('.topbar'); beforeRender(main);
   const view = `${state.tab}|${state.section}`; const same = view === lastView;
   const SIDEWAYS = ['.periods', '.seg', '.tablewrap'];
   const lefts = same ? Object.fromEntries(SIDEWAYS.map((sel) => [sel, main.querySelector(sel)?.scrollLeft])) : {}; const y = window.scrollY;
-  if (!state.tx.length && state.tab !== 'data' && state.tab !== 'settings') { main.innerHTML = emptyView(); lastView = view; afterRender(main, state, { first }); return; }
+  if (empty) { main.innerHTML = emptyView(); lastView = view; afterRender(main, state, { first }); return; }
   main.innerHTML = { overview: overviewView, months: monthsView, insights: insightsView, review: reviewView, data: dataView, settings: settingsView }[state.tab]();
   for (const sel of SIDEWAYS) { const el = main.querySelector(sel); if (el && lefts[sel] != null) el.scrollLeft = lefts[sel]; }
   if (state.focusMonth) { // opened from the Overview: bring that month's column into view
@@ -184,14 +195,6 @@ export function keepSelectedInView(row) {
   else if (b.right > r.right) row.scrollLeft += b.right - r.right + 12;
 }
 
-export function emptyView() {
-  return `${topbar('Finances')}<section class="empty">
-    <h1>Start with your statements</h1>
-    <p>Add your Deutsche Bank Kontoauszug PDFs (or the CSV export). Everything is read and stored on this ${DEVICE} only.</p>
-    <label class="btn primary">Add statements<input type="file" accept=".pdf,.csv,.json,application/pdf,text/csv,application/json" multiple data-act="import" hidden></label>
-    <p class="fine">Your rules file (my-rules.json) and backups are .json files: choose them here too.</p>
-  </section>`;
-}
 export function backupBanner() {
   const d = daysSince(state.lastBackup);
   if (lock.demo) return '';
@@ -235,17 +238,19 @@ export function periodPicker() {
 
 // ---------------- theme ----------------
 export const THEMES = [['auto', 'Auto'], ['light', 'Light'], ['dark', 'Dark']];
-export function currentTheme() { try { return localStorage.getItem('theme') || 'auto'; } catch { return 'auto'; } }
+// B60: the look chosen during a demo (theme, colours) lives in memory only; your own look is stored and comes back after the demo.
+const demoLook = {};
+export function currentTheme() { if (lock.demo && demoLook.theme) return demoLook.theme; try { return localStorage.getItem('theme') || 'auto'; } catch { return 'auto'; } }
 export function applyTheme(t) {
-  try { localStorage.setItem('theme', t); } catch { /* storage blocked */ }
+  if (lock.demo) demoLook.theme = t; else try { localStorage.setItem('theme', t); } catch { /* storage blocked */ }
   if (t === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
   syncThemeColor();
 }
 // v19 (I56): colour themes. Electric is the default; Classic is the look up to v18.
 export const PALETTES = [['electric', 'Electric', 'Violet and mint', ['#5B4BFF', '#12B886', '#1FA8F5']], ['lagoon', 'Lagoon', 'Deep teal and amber', ['#00806E', '#FFA41B', '#3D5AFE']], ['classic', 'Classic', 'The colours up to v18', ['#3B5BDB', '#0E8C7F', '#6FA3F7']]];
-export function currentPalette() { try { const p = localStorage.getItem('palette'); return PALETTES.some(([k]) => k === p) ? p : 'electric'; } catch { return 'electric'; } }
+export function currentPalette() { try { const p = lock.demo && demoLook.palette ? demoLook.palette : localStorage.getItem('palette'); return PALETTES.some(([k]) => k === p) ? p : 'electric'; } catch { return 'electric'; } }
 export function applyPalette(p) {
-  try { localStorage.setItem('palette', p); } catch { /* storage blocked */ }
+  if (lock.demo) demoLook.palette = p; else try { localStorage.setItem('palette', p); } catch { /* storage blocked */ }
   document.documentElement.dataset.palette = p; syncThemeColor();
 }
 function syncThemeColor() { const c = getComputedStyle(document.documentElement).getPropertyValue('--paper').trim(); if (c) document.querySelector('meta[name=theme-color]').content = c; }
@@ -254,7 +259,7 @@ export function topbar(title, sub = '') {
   const status = lock.demo ? '<span class="demo-strip"><span class="badge">Demo</span><span>Made-up data, not yours</span><button class="link" data-act="exitdemo">Exit demo</button></span>' : cloudPill();
   const back = state.back && state.back.tab !== state.tab ? `<button class="backlink" data-act="back">‹ ${h(state.back.label)}</button>` : '';
   // I50: the gear opens Settings on the phone (the Mac sidebar has its own Settings item); I51: the subtitle says where you are
-  return `${back}<header class="topbar${status ? ' has-status' : ''}"><h1>${h(title)}${sub ? `<span class="sub"> · ${h(sub)}</span>` : ''}</h1><div class="row"><button class="icon-btn" data-act="search" aria-label="Search bookings"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg></button>${state.tab === 'settings' ? '' : `<button class="icon-btn gear" data-act="settings" aria-label="Settings"><svg viewBox="0 0 24 24"><path d="${GEAR}"/><circle cx="12" cy="12" r="3"/></svg></button>`}</div>${status ? `<div class="tb-status">${status}</div>` : ''}</header>`;
+  return `${back}<header class="topbar${status ? ' has-status' : ''}"><h1>${h(title)}${sub ? `<span class="sub"> · ${h(sub)}</span>` : ''}</h1><div class="row"><button class="icon-btn" data-act="search" aria-label="Search bookings"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg></button>${lock.on || lock.demo ? '<button class="icon-btn" data-act="locknow" aria-label="Lock now" title="Lock now"><svg viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></svg></button>' : ''}${state.tab === 'settings' ? '' : `<button class="icon-btn gear" data-act="settings" aria-label="Settings"><svg viewBox="0 0 24 24"><path d="${GEAR}"/><circle cx="12" cy="12" r="3"/></svg></button>`}</div>${status ? `<div class="tb-status">${status}</div>` : ''}</header>`;
 }
 const GEAR = 'M10.54 4.95L10.72 2.49A9.6 9.6 0 0 1 13.28 2.49L13.46 4.95A7.2 7.2 0 0 1 15.95 5.98L17.82 4.37A9.6 9.6 0 0 1 19.63 6.18L18.02 8.05A7.2 7.2 0 0 1 19.05 10.54L21.51 10.72A9.6 9.6 0 0 1 21.51 13.28L19.05 13.46A7.2 7.2 0 0 1 18.02 15.95L19.63 17.82A9.6 9.6 0 0 1 17.82 19.63L15.95 18.02A7.2 7.2 0 0 1 13.46 19.05L13.28 21.51A9.6 9.6 0 0 1 10.72 21.51L10.54 19.05A7.2 7.2 0 0 1 8.05 18.02L6.18 19.63A9.6 9.6 0 0 1 4.37 17.82L5.98 15.95A7.2 7.2 0 0 1 4.95 13.46L2.49 13.28A9.6 9.6 0 0 1 2.49 10.72L4.95 10.54A7.2 7.2 0 0 1 5.98 8.05L4.37 6.18A9.6 9.6 0 0 1 6.18 4.37L8.05 5.98A7.2 7.2 0 0 1 10.54 4.95Z';
 // I51: short name of the chosen period for the title ("Sep 2026", "Q3 2026", "2026", "All time")
@@ -284,7 +289,7 @@ function ring(rate, neg) {
 }
 export function overviewView() {
   ensurePeriod();
-  const p = state.period; const ms = monthsIn(p.key, p.mode); const s = sumMonths(ms);
+  const p = state.period; const ms = monthsIn(p.key, p.mode); const s = sumMonths(ms); const U = state.agg.inUse || {};
   const rec = reconcile(state.tx, pdfStatements()).filter((r) => ms.includes(monthOf(r.to)));
   const tie = rec.length ? rec.every((r) => Math.abs(r.diff) < 0.005 && r.chainOk) : null;
   const pendingTx = state.agg.review.filter((t) => ms.includes(monthOf(t.date))); const pending = pendingTx.length;
@@ -310,20 +315,20 @@ export function overviewView() {
       <li class="lead go" data-gosec="income"><i class="dot c-earned"></i><span>Earned income</span><b>${eur(s.earned)}</b><em>›</em></li>
       <li class="go" data-gosec="fixed"><i class="dot c-fixed"></i><span>Fixed / recurring</span><b>−${eur(s.fixed)}</b><em>›</em></li>
       <li class="go" data-gosec="variable"><i class="dot c-variable"></i><span>Variable</span><b>−${eur(s.variable)}</b><em>›</em></li>
-      <li class="go" data-gosec="onetime"><i class="dot c-onetime"></i><span>One-time</span><b>−${eur(s.onetime)}</b><em>›</em></li>
-      <li class="go" data-gosec="income"><i class="dot c-abroad"></i><span>Sent abroad, own money</span><b>−${eur(s.abroad)}</b><em>›</em></li>
+      ${U.onetime ? `<li class="go" data-gosec="onetime"><i class="dot c-onetime"></i><span>One-time</span><b>−${eur(s.onetime)}</b><em>›</em></li>` : ''}
+      ${U.abroad ? `<li class="go" data-gosec="income"><i class="dot c-abroad"></i><span>Sent abroad, own money</span><b>−${eur(s.abroad)}</b><em>›</em></li>` : ''}
       <li class="total"><i class="dot c-saved"></i><span>Saved</span><b>${eur(s.saved)}</b></li>
     </ul>
     ${s.abroadGross || s.passThrough ? `<div class="abroad-card"><span class="flag" aria-hidden="true">🌍</span><div><h3>Transfers abroad</h3>
       <p><span>Sent abroad</span><b>${eur(s.abroadGross)}</b></p>${s.passThroughSav ? `<p><span>${h(lineLabel('pt.sav'))}</span><b class="pos">+${eur(s.passThroughSav)}</b></p>` : ''}${s.passThrough - s.passThroughSav > 0.005 ? `<p><span>${h(lineLabel('pt.in'))}</span><b class="pos">+${eur(s.passThrough - s.passThroughSav)}</b></p>` : ''}
       <p class="own"><span>From your own money</span><b>${eur(s.abroad)}</b></p></div></div>` : ''}
     <div class="went"><h3>Where the saved money is</h3>
-      <div><span>Moved to savings, net</span><b>${eur(s.movedIn)}</b></div>
+      ${U.savings ? `<div><span>Moved to savings, net</span><b>${eur(s.movedIn)}</b></div>` : ''}
       ${s.takenBack ? `<div><span>Taken back from savings</span><b>${eur(s.takenBack)}</b></div>` : ''}
       <div><span>Kept in this account</span><b>${eur(s.keptIn)}</b></div>
       ${s.fromBalance ? `<div><span>From the account's earlier balance</span><b>${eur(s.fromBalance)}</b></div>` : ''}
     </div>
-    ${tie === null ? '<p class="seal">No statement for this period yet</p>' : `<p class="seal ${tie ? 'ok' : 'bad'}">${tie ? `Ties to ${rec.length > 1 ? `${rec.length} statements` : 'the statement'}: ${eur(rec[0].open)} → ${eur(rec[rec.length - 1].close)}` : 'A statement in this period does not tie (see Data)'}</p>`}
+    ${tie === null ? (pdfStatements().length ? '<p class="seal">No statement for this period yet</p>' : '') : `<p class="seal ${tie ? 'ok' : 'bad'}">${tie ? `Ties to ${rec.length > 1 ? `${rec.length} statements` : 'the statement'}: ${eur(rec[0].open)} → ${eur(rec[rec.length - 1].close)}` : 'A statement in this period does not tie (see Data)'}</p>`}
     ${state.agg.passFlags.some((t) => ms.includes(monthOf(t.date))) ? '<button class="seal bad" data-tab="review">Was money from savings forwarded abroad? Answer in Review</button>' : ''}
     ${rulesFileNotice()}
     ${pending ? `<button class="seal bad" data-tab="review">${pending} booking${pending > 1 ? 's' : ''} (${eur(pendingAmt)}) still need review</button>` : ''}
@@ -382,7 +387,7 @@ export function chartFlows() {
       <rect class="hit" data-pjump="${pjumpMode()}|${s.key}" x="${x}" y="0" width="${bw}" height="${H + 32}"><title>Show ${h(s.label)}</title></rect>`;
   }).join('');
   return `<svg viewBox="0 0 ${W} ${H + 32}" class="chart" role="img" aria-label="Earned, spent and saved per period">${axis(y, Math.round(min), Math.round(max))}${bars}<polyline points="${S.map((s, i) => `${px(i)},${y(s.saved)}`).join(' ')}" class="l-sav"/>${S.map((s, i) => `<circle cx="${px(i)}" cy="${y(s.saved)}" r="3.5" class="d-sav"/>`).join('')}</svg>
-  <p class="legend"><span><i class="k-in"></i>Earned</span><span><i class="k-out"></i>Spent and sent abroad</span><span><i class="k-sav"></i>Saved</span></p>`;
+  <p class="legend"><span><i class="k-in"></i>Earned</span><span><i class="k-out"></i>${state.agg.inUse && state.agg.inUse.abroad ? 'Spent and sent abroad' : 'Spent'}</span><span><i class="k-sav"></i>Saved</span></p>`;
 }
 export function chartRate() {
   W = 340; const S = series(); const H = 110;
@@ -430,13 +435,16 @@ export function spark(vals, w = 48, hgt = 16) {
 }
 export const SEG = [['fixed', 'Fixed'], ['variable', 'Variable'], ['onetime', 'One-time'], ['income', 'Income'], ['search', 'Search']];
 export function monthsView() {
-  const seg = `<div class="seg" role="tablist">${SEG.map(([k, l]) => `<button role="tab" aria-selected="${state.section === k}" data-section="${k}">${l}</button>`).join('')}</div>`;
+  const U = state.agg.inUse || {}; if (state.section === 'onetime' && !U.onetime) state.section = 'fixed';
+  const seg = `<div class="seg" role="tablist">${SEG.filter(([k]) => k !== 'onetime' || U.onetime).map(([k, l]) => `<button role="tab" aria-selected="${state.section === k}" data-section="${k}">${l}</button>`).join('')}</div>`;
   if (state.section === 'search') return topbar('Months', 'Search') + seg + searchView();
   const a = state.agg;
   const secs = state.section === 'income' ? ['income', 'abroad', 'passthrough', 'tosav', 'fromsav'] : [state.section];
   const ls = a.order.filter((l) => secs.includes(l.sec));
   // B52: months with nothing in this section are skipped (Data > "Skip months with nothing in them"); totals still cover every month.
-  const hasAny = (m) => ls.some((l) => a.cell[`${l.id}|${m}`]);
+  // B63: on the Income tab the totals underneath also count: a month with spending but no income is not empty.
+  const sumFor = Object.fromEntries(a.summary.map((x) => [x.month, x]));
+  const hasAny = (m) => ls.some((l) => a.cell[`${l.id}|${m}`]) || (state.section === 'income' && !!sumFor[m] && (sumFor[m].earned || sumFor[m].spent || sumFor[m].abroadGross || sumFor[m].saved));
   const ms = [...a.months].filter((m) => !state.settings.skipEmptyMonths || hasAny(m)).reverse(); // newest month first
   let group = null;
   const groupOf = (l) => (state.section === 'variable' ? l.group : state.section === 'income' ? (l.sec === 'income' ? 'Earned income' : SECTIONS[l.sec]) : '');
@@ -465,7 +473,7 @@ export function monthsView() {
   const all = sumMonths(a.months); // B44: totals are netted once over the whole time, like the Overview
   const footRow = (label, key) => `<tr class="total"><th><span class="tl">${label}${spark(a.summary.slice(-6).map((x) => x[key]), 56, 14)}</span></th><td class="tot">${n2(key in all ? all[key] : a.summary.reduce((x, s) => x + s[key], 0))}</td>${ms.map((m) => `<td>${n2(sumOf[m][key])}</td>`).join('')}</tr>`;
   const foot = state.section === 'income'
-    ? [['Earned income', 'earned'], ['Total spent', 'spent'], ['Sent abroad (own money)', 'abroad'], ['Saved', 'saved'], ['Moved to savings, net', 'movedIn'], ...(a.summary.some((x) => x.takenBack) || all.takenBack ? [['Taken back from savings', 'takenBack']] : []), ['Kept in account', 'keptIn'], ...(a.summary.some((x) => x.fromBalance) || all.fromBalance ? [['From earlier balance', 'fromBalance']] : [])].map(([l, k]) => footRow(l, k)).join('')
+    ? [['Earned income', 'earned'], ['Total spent', 'spent'], ...(U.abroad ? [['Sent abroad (own money)', 'abroad']] : []), ['Saved', 'saved'], ...(U.savings ? [['Moved to savings, net', 'movedIn']] : []), ...(a.summary.some((x) => x.takenBack) || all.takenBack ? [['Taken back from savings', 'takenBack']] : []), ['Kept in account', 'keptIn'], ...(a.summary.some((x) => x.fromBalance) || all.fromBalance ? [['From earlier balance', 'fromBalance']] : [])].map(([l, k]) => footRow(l, k)).join('')
     : footRow('Total', state.section);
   // B53: every amount column is as wide as the widest amount in the table (five-digit totals included).
   const widest = Math.max(0, ...((rows + foot).match(/-?\d[\d.]*,\d\d/g) || []).map((x) => x.length));
@@ -478,13 +486,22 @@ export function monthsView() {
 // Laptop: the month's totals beside the table, plus Transfers abroad by month.
 function sumMonth() { const ms = state.agg.months; return ms.includes(state.sumMonth) ? state.sumMonth : ms[ms.length - 1]; }
 function summaryColumn() {
-  const a = state.agg; const m = sumMonth(); const s = a.summary.find((x) => x.month === m);
+  const a = state.agg; const m = sumMonth(); const s = a.summary.find((x) => x.month === m); const U = a.inUse || {};
   const row = (label, v, sec, cls = '') => `<li class="${cls}${sec && sec === state.section ? ' on' : ''}"${sec ? ` data-section="${sec}"` : ''}><span>${label}</span><b>${eur(v)}</b>${sec ? '<em>›</em>' : ''}</li>`;
-  const abroad = a.summary.map((x) => x.abroadGross); const max = Math.max(1, ...abroad);
+  let second;
+  if (U.abroad) {
+    const abroad = a.summary.map((x) => x.abroadGross); const max = Math.max(1, ...abroad);
+    second = `<section class="card"><h2>Transfers abroad</h2><div class="minibars">${a.summary.map((x) => `<button data-summonth="${x.month}" class="${x.month === m ? 'on' : ''}" title="${h(monthLabel(x.month))}: ${eur(x.abroadGross)}" aria-label="${h(monthLabel(x.month))}: ${eur(x.abroadGross)} sent abroad"><i style="height:${Math.max(2, x.abroadGross / max * 100).toFixed(0)}%"></i><span>${h(monthLabel(x.month, true))}</span></button>`).join('')}</div>
+    <p class="fine">Sent in total: ${eur(abroad.reduce((x, y) => x + y, 0))}. Tap a bar to open that month.</p></section>`;
+  } else {
+    // I80: without transfers abroad, the second card shows where the month's variable money went.
+    const by = {}; for (const t of a.rows) if (t.line && monthOf(t.date) === m && lineMeta(t.line).sec === 'variable') { const g = lineMeta(t.line).group || 'Other'; by[g] = (by[g] || 0) - t.amount; }
+    const top = Object.entries(by).filter(([, v]) => v > 0.005).sort((x, y) => y[1] - x[1]).slice(0, 5); const max = top.length ? top[0][1] : 1;
+    second = `<section class="card"><h2>Biggest categories</h2>${top.length ? `<ul class="hbars">${top.map(([g, v]) => `<li><button data-section="variable"><span>${h(g)}</span><b>${eur(v)}</b><i style="width:${(v / max * 100).toFixed(1)}%"></i></button></li>`).join('')}</ul><p class="fine">Variable spending in ${h(monthLabel(m))}. Click to open Variable.</p>` : '<p class="fine">No variable spending this month.</p>'}</section>`;
+  }
   return `<aside class="sumcol"><section class="card"><h2>${h(monthLabel(m))}<small class="hint">Click a month in the table to show it here</small></h2><ul class="sumlist">
-    ${row('Earned income', s.earned, 'income', 'lead')}${row('Fixed / recurring', -s.fixed, 'fixed')}${row('Variable', -s.variable, 'variable')}${row('One-time', -s.onetime, 'onetime')}${row('Sent abroad, own money', -s.abroad, 'income')}${row('Saved', s.saved, '', 'total')}</ul></section>
-    <section class="card"><h2>Transfers abroad</h2><div class="minibars">${a.summary.map((x) => `<button data-summonth="${x.month}" class="${x.month === m ? 'on' : ''}" title="${h(monthLabel(x.month))}: ${eur(x.abroadGross)}" aria-label="${h(monthLabel(x.month))}: ${eur(x.abroadGross)} sent abroad"><i style="height:${Math.max(2, x.abroadGross / max * 100).toFixed(0)}%"></i><span>${h(monthLabel(x.month, true))}</span></button>`).join('')}</div>
-    <p class="fine">Sent in total: ${eur(abroad.reduce((x, y) => x + y, 0))}. Tap a bar to open that month.</p></section></aside>`;
+    ${row('Earned income', s.earned, 'income', 'lead')}${row('Fixed / recurring', -s.fixed, 'fixed')}${row('Variable', -s.variable, 'variable')}${U.onetime ? row('One-time', -s.onetime, 'onetime') : ''}${U.abroad ? row('Sent abroad, own money', -s.abroad, 'income') : ''}${row('Saved', s.saved, '', 'total')}</ul></section>
+    ${second}</aside>`;
 }
 export function searchView() {
   return `<div class="pad"><input type="search" id="q" placeholder="Vendor, text, amount or note" value="${h(state.q)}" autocomplete="off"></div><div id="results">${searchResults()}</div>`;
@@ -541,7 +558,11 @@ export function lineOptions(selected) {
   const trips = (state.settings.trips || []).map((t) => ({ id: `trip:${t.name}`, sec: 'variable', label: lineLabel(`trip:${t.name}`) }));
   const L = [...lines(), ...trips];
   const order = ['fixed', 'variable', 'onetime', 'income', 'abroad', 'passthrough', 'tosav', 'fromsav', 'offset'];
-  return order.map((sec) => { const ls = L.filter((l) => l.sec === sec); return ls.length ? `<optgroup label="${h(SECTIONS[sec])}">${ls.map((l) => `<option value="${h(l.id)}"${l.id === selected ? ' selected' : ''}>${h(l.label)}</option>`).join('')}</optgroup>` : ''; }).join('')
+  const used = new Set((state.agg ? state.agg.rows : []).map((t) => t.line)); used.add(selected);
+  const opt = (l) => `<option value="${h(l.id)}"${l.id === selected ? ' selected' : ''}>${h(l.label)}</option>`;
+  const mine = order.map((sec) => { const ls = L.filter((l) => l.sec === sec && used.has(l.id)); return ls.length ? `<optgroup label="${h(SECTIONS[sec])}">${ls.map(opt).join('')}</optgroup>` : ''; }).join('');
+  const more = order.map((sec) => { const ls = L.filter((l) => l.sec === sec && !used.has(l.id)); return ls.length ? `<optgroup label="More lines · ${h(SECTIONS[sec])}">${ls.map(opt).join('')}</optgroup>` : ''; }).join('');
+  return mine + more
     + '<optgroup label="Something else"><option value="__new">＋ New line…</option></optgroup>';
 }
 export function txList(txs, allDefault = false, review = false) {

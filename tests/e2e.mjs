@@ -30,7 +30,7 @@ for (const [dn, vp] of [['iPhone', PHONE], ['Mac', MAC]]) for (const scheme of [
   ok(`${N}: B52 One-time skips months without one-time items`, JSON.stringify(await heads(p)) === JSON.stringify(['2026-07', '2026-05']), JSON.stringify(await heads(p)));
   const oneTotalOn = await totals(p);
   await section(p, 'income');
-  ok(`${N}: B52 Income skips the month with no income, transfer or savings booking`, !(await heads(p)).includes('2026-07') && (await heads(p)).includes('2026-06') && (await heads(p)).length === 5, JSON.stringify(await heads(p)));
+  ok(`${N}: B63 Income keeps a month with spending but no income (it is not empty)`, (await heads(p)).includes('2026-07') && (await heads(p)).includes('2026-06') && (await heads(p)).length === 6, JSON.stringify(await heads(p)));
   await section(p, 'fixed');
   ok(`${N}: B52 Fixed keeps every month (rent every month)`, (await heads(p)).length === 6);
   await section(p, 'variable');

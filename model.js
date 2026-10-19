@@ -304,7 +304,10 @@ export function aggregate(txs, settings) {
     for (const t of rows) if (monthOf(t.date) === m && t.line && lineMeta(t.line).sec === 'fromsav' && t.amount <= abroad + 0.005
       && !(settings.flagDismissed || {})[t.id] && !settings.txRules[t.id]) passFlags.push({ ...t, abroad: r2(abroad) });
   }
-  return { rows, months, cell, order, summary, review, unknownLine, orphanCount, oldRulesFile, flags, passFlags };
+  // I80: a section is in use once any booking in the data is on it.
+  const inUse = {}; for (const t of rows) if (t.line) inUse[lineMeta(t.line).sec] = true;
+  inUse.savings = !!(inUse.tosav || inUse.fromsav);
+  return { inUse, rows, months, cell, order, summary, review, unknownLine, orphanCount, oldRulesFile, flags, passFlags };
 }
 
 // Running-balance reconciliation: every statement must tie on its own and chain to the previous one.
