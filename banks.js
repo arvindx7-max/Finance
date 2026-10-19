@@ -83,9 +83,11 @@ export function parseWithMap(table, map) {
   const rows = []; let skipped = 0;
   for (const r of table.rows) {
     const date = parseDate(r[map.dateCol], map.dateFmt);
-    let amount = map.amountMode === 'split'
-      ? (parseAmount(r[map.creditCol], map.decimal) || 0) - Math.abs(parseAmount(r[map.debitCol], map.decimal) || 0)
-      : parseAmount(r[map.amountCol], map.decimal);
+    let amount;
+    if (map.amountMode === 'split') {
+      const cr = parseAmount(r[map.creditCol], map.decimal), db = parseAmount(r[map.debitCol], map.decimal);
+      amount = Number.isNaN(cr) && Number.isNaN(db) ? NaN : (Number.isNaN(cr) ? 0 : cr) - Math.abs(Number.isNaN(db) ? 0 : db);
+    } else amount = parseAmount(r[map.amountCol], map.decimal);
     if (!date || Number.isNaN(amount)) { skipped++; continue; }
     const parts = (map.desc || []).map((i) => r[i]).filter(Boolean);
     rows.push(normalize({ date, valuta: null, amount: r2(amount), type: '', lines: [parts[0] || '', 'Verwendungszweck/ Kundenreferenz', ...parts.slice(1)].filter(Boolean), source: 'csv', bank: map.bank }));
@@ -97,7 +99,9 @@ const opt = (cols, sel) => cols.map((c, i) => `<option value="${i}"${i === sel ?
 // The one-time question: which column is which. Resolves with the mapping, or null when cancelled.
 export async function askMapping(table, map0) {
   const H = table.headers; const m = map0;
-  const body = `<label>Bank name<input type="text" name="bank" value="${h(m.bank)}" maxlength="40" placeholder="the name of the bank" required></label>
+  const pv = table.rows.slice(0, 3).map((r) => h(r.map((c) => String(c ?? '').trim().slice(0, 24)).join(' | '))).join('<br>');
+  const body = `<div class="pv"><b>First rows of the file</b><br>${pv}</div>
+    <label>Bank name<input type="text" name="bank" value="${h(m.bank)}" maxlength="40" placeholder="the name of the bank" required></label>
     <label>Date column<select name="dateCol">${opt(H, m.dateCol)}</select></label>
     <label>Date looks like<select name="dateFmt"><option value="dmy"${m.dateFmt === 'dmy' ? ' selected' : ''}>day, month, year (31.12.2026)</option><option value="mdy"${m.dateFmt === 'mdy' ? ' selected' : ''}>month, day, year (12/31/2026)</option><option value="ymd"${m.dateFmt === 'ymd' ? ' selected' : ''}>year, month, day (2026-12-31)</option></select></label>
     <label>Amounts are in<select name="amountMode"><option value="one"${m.amountMode === 'one' ? ' selected' : ''}>one column (negative = money out)</option><option value="split"${m.amountMode === 'split' ? ' selected' : ''}>two columns (money out, money in)</option></select></label>

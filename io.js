@@ -129,7 +129,7 @@ export async function loadRules(j) {
 export function rulesPayload() {
   const s = state.settings;
   return { ...(s.profile || emptyProfile()), trips: s.trips, startMonth: s.startMonth,
-    vendorAnswers: Object.fromEntries(live(s.vendorRules)), bookingAnswers: Object.fromEntries(live(s.txRules)), dismissed: Object.fromEntries(live(s.flagDismissed)) };
+    vendorAnswers: Object.fromEntries(live(s.vendorRules)), bookingAnswers: Object.fromEntries(live(s.txRules).filter(([id]) => !(s.manualGone || {})[id])), dismissed: Object.fromEntries(live(s.flagDismissed)) };
 }
 export const exportRules = () => deliver(new Blob([JSON.stringify(rulesPayload(), null, 2)], { type: 'application/json' }), 'my-rules.json');
 

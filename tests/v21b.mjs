@@ -46,7 +46,9 @@ for (const [dn, vp] of [['iPhone', PHONE], ['Mac', MAC]]) for (const scheme of [
   await p.click('[data-act=search]'); await p.waitForSelector('#q'); await p.fill('#q', 'Test Cafe'); await p.waitForTimeout(300);
   await p.click(`[data-tx="${gone1.id}"]`); await p.waitForSelector('#sheet:not([hidden]) .txs');
   ok(`${N}: I81 an entry you typed in offers "Remove this entry"`, (await p.$$('#sheet [data-delentry]')).length === 1 && /entered by you/.test(await p.textContent('#sheet')));
-  await p.click('#sheet [data-delentry]'); await confirmDialog(p); await p.waitForTimeout(500); await closeAll(p);
+  await p.click('#sheet [data-delentry]'); await confirmDialog(p); await p.waitForTimeout(500);
+  ok(`${N}: I81 removing an entry closes its sheet`, !(await p.isVisible('#sheet:not([hidden]) .txs')));
+  await closeAll(p);
   ok(`${N}: I81 a removed entry is marked, not deleted from storage`, (await manual(p)).length === 2 && (await p.evaluate(() => window.__app.state.agg.rows.filter((t) => t.source === 'manual').length)) === 1);
   await p.click(vp === PHONE ? '.tabbar [data-tab=insights]' : '.tabbar [data-tab=insights], .sidebar [data-tab=insights]'); await p.waitForTimeout(400);
   await p.click('[data-act=countrest]'); await p.waitForTimeout(600);
@@ -87,6 +89,7 @@ for (const [dn, vp] of [['iPhone', PHONE], ['Mac', MAC]]) for (const scheme of [
     const g = await two.evaluate(() => Object.keys(window.__app.state.settings.manualGone).length);
     const sp2 = await sum(two, '2026-04');
     ok(`${N}: I81 ${choice}: ${choice === 'pick' ? 'merged with the booking you picked' : 'kept separate, still counted'}`, choice === 'pick' ? g === 1 && Math.abs(sp2.spent - 1691.8) < 0.005 : g === 0 && Math.abs(sp2.spent - (1691.8 + 45.9)) < 0.005, JSON.stringify({ g, sp2 }));
+    if (choice === 'none') ok(`${N}: I81 "keep separate" is an answer in the settings and the entry is not changed`, await two.evaluate(() => { const m = window.__app.state.tx.find((t) => t.source === 'manual'); return Object.keys(window.__app.state.settings.manualKept).length === 1 && m.manual.waiting === true; }));
     await two.context().close();
   }
 
@@ -100,11 +103,15 @@ for (const [dn, vp] of [['iPhone', PHONE], ['Mac', MAC]]) for (const scheme of [
   await a.waitForSelector('#dialog:not([hidden]) form[data-dlgform]', { timeout: 20000 });
   const guess = await a.evaluate(() => { const f = document.querySelector('#dialog form'); return { date: f.dateCol.value, amount: f.amountCol.value, fmt: f.dateFmt.value, dec: f.decimal.value, mode: f.amountMode.value, desc: [...f.querySelectorAll('input[name=desc]:checked')].map((x) => x.value) }; });
   ok(`${N}: I83 a new layout asks which column is which, with sensible guesses`, guess.date === '0' && guess.amount === '2' && guess.fmt === 'ymd' && guess.dec === 'dot' && guess.mode === 'one' && guess.desc.join() === '1', JSON.stringify(guess));
+  ok(`${N}: I83 the column question shows the first rows of the file`, /First rows of the file/.test(await a.textContent('#dialog .pv')) && /Test Supermarket/.test(await a.textContent('#dialog .pv')));
   await a.fill('#dialog [name=bank]', 'Example Bank Two'); await a.click('#dialog [data-dlg=ok]');
   await pr1; await a.waitForSelector('#sheet:not([hidden]) .report', { timeout: 20000 });
   ok(`${N}: I83 the report names the bank`, /Example Bank Two/.test(await a.textContent('#sheet')) && /2 new/.test(await a.textContent('#sheet')), (await a.textContent('#sheet')).slice(0, 200)); await closeAll(a);
   const sav1 = await sum(a, '2026-04');
   ok(`${N}: I83 the two sides of the transfer between your own accounts cancel out`, sav1 && Math.abs(sav1.netToSav) < 0.005, JSON.stringify(sav1));
+  await a.click(vp === PHONE ? '[data-act=search]' : '[data-act=search]'); await a.waitForSelector('#q'); await a.fill('#q', 'Savings Test Account'); await a.waitForTimeout(300);
+  await a.click('[data-tx]'); await a.waitForSelector('#sheet:not([hidden]) .txs');
+  ok(`${N}: I83 the tag names the other bank`, /between your own accounts \(Example Bank Two\)/.test(await a.textContent('#sheet')), (await a.textContent('#sheet')).replace(/\s+/g, ' ').slice(0, 200)); await closeAll(a); await closeAll(a);
   ok(`${N}: I83 both are on the offsetting line`, (await lineOf(a, "t.vendor === 'Alice Placeholder' || t.vendor === 'Savings Test Account'")).every((l) => l === 'off.other'));
   ok(`${N}: I83 the same amount at two banks is not taken for a duplicate`, await a.evaluate(() => window.__app.state.tx.filter((t) => t.amount === -45.9).length) === 2);
   ok(`${N}: I83 the columns are remembered`, await a.evaluate(() => Object.keys(window.__app.state.settings.csvMaps).length) === 1);

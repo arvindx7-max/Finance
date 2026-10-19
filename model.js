@@ -94,6 +94,7 @@ export const DEFAULT_SETTINGS = {
   savingsStart: null, // { month, amount }: savings account balance at the start of that month (for the estimate)
   manualGone: {},    // I81: entries you typed in that were removed or merged with a statement booking (id -> true)
   cash: null,        // I81: null = not asked yet, 'track' = ATM withdrawals move to a wallet and cash spending is entered, 'count' = ATM withdrawals count as spent
+  manualKept: {},    // I81: waiting entries you chose to keep separate from the statement (id -> true)
   csvMaps: {},       // I83: column mapping of other banks' CSV files, remembered per file layout
   skipEmptyMonths: true, // Months: skip month columns with nothing in the section being viewed (Data tab switch)
   profile: null,     // the user's rules file
@@ -235,7 +236,9 @@ export function dateSummary(dates) {
 const dayNo = (iso) => Math.round(Date.parse(iso) / 86400000);
 export function pairOwnTransfers(rows, settings) {
   const bankOf = (t) => t.bank || '';
-  const cand = rows.filter((t) => t.source !== 'manual' && !(settings.txRules || {})[t.id]);
+  // Only bookings that are not already sorted into spending or income can be an own-account transfer.
+  const PAIRABLE = new Set(['tosav', 'fromsav', 'abroad', 'passthrough', 'offset']);
+  const cand = rows.filter((t) => t.source !== 'manual' && !(settings.txRules || {})[t.id] && (!t.line || PAIRABLE.has(lineMeta(t.line).sec)));
   if (new Set(cand.map(bankOf)).size < 2) return 0;
   const outs = cand.filter((t) => t.amount < 0).sort((a, b) => a.date.localeCompare(b.date));
   const taken = new Set(); let n = 0;

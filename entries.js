@@ -13,6 +13,7 @@ import { lineOptions } from './views.js';
 const r2 = (v) => Math.round(v * 100) / 100;
 export const isManual = (t) => t.source === 'manual';
 export const gone = (id) => !!(state.settings.manualGone || {})[id];
+export const waitingFor = (t) => !!(t.manual && t.manual.waiting && !(state.settings.manualKept || {})[t.id]); // still waiting for its statement booking
 const dayNo = (iso) => Math.round(Date.parse(iso) / 86400000);
 const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const WAYS = { cash: 'Cash', card: 'Card', transfer: 'Bank transfer' };
@@ -106,37 +107,39 @@ async function askMatch(what, cands, title) {
 }
 // After an import: entries that were waiting for a statement meet the new bookings. One match is merged at once; when two fit, you pick.
 export async function matchWaiting(added) {
-  const waiting = state.tx.filter((t) => isManual(t) && t.manual && t.manual.waiting && !gone(t.id));
+  const waiting = state.tx.filter((t) => isManual(t) && waitingFor(t) && !gone(t.id));
   const fresh = added.filter((t) => !isManual(t));
   if (!waiting.length || !fresh.length) return null;
   const opts = new Map(waiting.map((w) => [w.id, candidates(w.amount, w.date, fresh)])).entries();
   const options = [...opts].filter(([, c]) => c.length);
   if (!options.length) return null;
   const claimants = new Map(); for (const [, cs] of options) for (const c of cs) claimants.set(c.id, (claimants.get(c.id) || 0) + 1);
-  const pairs = []; const taken = new Set(); let kept = 0;
+  const pairs = []; const taken = new Set(); const keep = [];
   for (const [wid, cs] of options) {
     const w = waiting.find((x) => x.id === wid);
     const free = cs.filter((c) => !taken.has(c.id));
     if (free.length === 1 && claimants.get(free[0].id) === 1) { pairs.push([w, free[0]]); taken.add(free[0].id); continue; }
     if (!free.length) continue;
     const pick = await askMatch(`${w.vendor} · ${deDate(w.date)} · ${eur(w.amount)} was waiting for its statement booking`, free, 'Which booking is yours?');
-    if (pick) { pairs.push([w, pick]); taken.add(pick.id); } else if (pick === null) { kept++; markSeparate(w); }
+    if (pick) { pairs.push([w, pick]); taken.add(pick.id); } else if (pick === null) keep.push(w.id);
   }
+  const kept = keep.length;
   if (!pairs.length && !kept) return null;
-  if (!pairs.length) { recompute(); markChanged(); }
-  else await change(`${pairs.length} entr${pairs.length === 1 ? 'y' : 'ies'} matched with the statement`, (s) => {
-    s.manualGone ||= {};
+  // "Keep separate" and "matched" are both answers in the settings, so they sync to your other devices.
+  await change(pairs.length ? `${pairs.length} entr${pairs.length === 1 ? 'y' : 'ies'} matched with the statement` : 'Entries kept separate', (s) => {
+    s.manualGone ||= {}; s.manualKept ||= {};
+    for (const id of keep) s.manualKept[id] = true;
     for (const [w, c] of pairs) { carryOver(s, { line: classify(w, s), note: (s.notes || {})[w.id] || '' }, c); s.manualGone[w.id] = true; }
   });
   return `${pairs.length} entr${pairs.length === 1 ? 'y' : 'ies'} you typed in matched with statement bookings${kept ? `, ${kept} kept separate` : ''}`;
 }
-function markSeparate(w) { w.manual = { ...w.manual, waiting: false }; putMany('tx', [w]); }
 
 // ---------------- removing ----------------
 export async function removeEntry(id) {
   const t = state.tx.find((x) => x.id === id); if (!t || !isManual(t)) return;
   const yes = await ask({ title: 'Remove this entry?', text: `${t.vendor} · ${deDate(t.date)} · ${eur(t.amount)}. Statement bookings are not touched.`, ok: 'Remove', danger: true });
   if (!yes) return;
+  closeSheet();
   await change('Entry removed', (s) => { (s.manualGone ||= {})[id] = true; });
 }
 
@@ -172,4 +175,4 @@ export function cashCard() {
     <label class="frow sw"><span>Track my cash<small>ATM withdrawals move to a wallet and no longer count as spending. The cash you spend is entered with the + button and counts instead.${s.cash == null ? ' Not chosen yet; you are asked at your first cash entry.' : ''}</small></span><input type="checkbox" class="switch" data-cashtrack${s.cash === 'track' ? ' checked' : ''}></label>
     <button class="btn" data-act="addentry">Add an entry</button></section>`;
 }
-export const entryTag = (t) => (isManual(t) ? ` · entered by you${t.manual && t.manual.waiting ? ' · waiting for statement' : ''}` : '');
+export const entryTag = (t) => (isManual(t) ? ` · entered by you${waitingFor(t) ? ' · waiting for statement' : ''}` : '');

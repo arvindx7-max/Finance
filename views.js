@@ -556,6 +556,7 @@ export function lineHtml() {
 }
 
 // ---------------- picking a line ----------------
+const ownBank = (t) => { const o = state.agg.rows.find((x) => x.id === t.ownPair); return o && o.bank ? o.bank : ''; };
 export function lineOptions(selected) {
   const trips = (state.settings.trips || []).map((t) => ({ id: `trip:${t.name}`, sec: 'variable', label: lineLabel(`trip:${t.name}`) }));
   const L = [...lines(), ...trips];
@@ -572,7 +573,7 @@ export function txList(txs, allDefault = false, review = false) {
     // I68: in Review, up to three suggested lines are one tap; the full list stays under "Other line…"
     const sug = review && !t.line ? suggestLines(t, state.agg.rows, 8).filter((id) => lineMeta(id)).slice(0, 3) : [];
     return `<li>
-    <div><b>${h(t.vendor)}</b><span>${deDate(t.date)}${t.cardDate && t.cardDate !== t.date ? ` · paid ${deDate(t.cardDate)}` : ''}${entryTag(t)}${t.ownPair ? ' · between your own accounts' : ''}${t.bank ? ` · ${h(t.bank)}` : ''}</span></div>
+    <div><b>${h(t.vendor)}</b><span>${deDate(t.date)}${t.cardDate && t.cardDate !== t.date ? ` · paid ${deDate(t.cardDate)}` : ''}${entryTag(t)}${t.ownPair ? ` · between your own accounts${ownBank(t) ? ` (${h(ownBank(t))})` : ''}` : ''}${t.bank ? ` · ${h(t.bank)}` : ''}</span></div>
     <strong class="${t.amount < 0 ? '' : 'pos'}">${eur(t.amount)}</strong>
     ${sug.length ? `<div class="sugg"><span class="lbl">Suggested</span><div class="chips">${sug.map((id) => `<button data-suggest="${h(id)}" data-sugtx="${h(t.id)}">${h(lineLabel(id))}</button>`).join('')}</div></div>` : ''}
     <div class="fgroup">
@@ -683,7 +684,7 @@ export function dataView() {
     return `<li class="${ok ? 'ok' : 'bad'}"><div><b>Balance on ${deDate(c.date)} (CSV)</b><span>${ok ? 'Ties' : `Off by ${eur(computed - c.close)}`}</span></div><p>Computed ${n2(computed)} · bank ${n2(c.close)}</p></li>`;
   }).join('');
   const s = state.settings; const d = daysSince(state.lastBackup);
-  const nAns = live(s.vendorRules).length + live(s.txRules).length;
+  const nAns = live(s.vendorRules).length + live(s.txRules).filter(([id]) => !(s.manualGone || {})[id]).length;
   const own = (s.profile?.lines || []).filter((l) => l.id.startsWith('c.')).length;
   return `${topbar('Data')}<div class="data-grid"><section class="card wide">
     <h2>Add statements</h2>
@@ -771,7 +772,7 @@ export function manageSheet() { sheet(manageHtml(), manageHtml); }
 export function manageHtml() {
   const s = state.settings;
   const v = live(s.vendorRules);
-  const b = live(s.txRules);
+  const b = live(s.txRules).filter(([id]) => !(s.manualGone || {})[id]); // answers of removed entries stay out of sight
   const own = (s.profile?.lines || []).filter((l) => l.id.startsWith('c.'));
   const nDis = live(s.flagDismissed).length;
   const usage = (id) => state.agg.rows.filter((t) => t.line === id).length;
