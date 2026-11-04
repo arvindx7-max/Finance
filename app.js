@@ -12,7 +12,7 @@ import { applyMotion, setMotion } from './motion.js';
 import { exportBackup, exportExcel, exportRules, importFiles } from './io.js';
 import { syncMappingForm } from './banks.js';
 import { countRest, entrySheet, removeEntry, saveEntry, syncEntryForm } from './entries.js';
-import { APP_VERSION, addUserRule, applyPalette, applyTheme, currentPalette, assign, budgetSheet, createLine, currentTheme, drillSheet, forgetView, goalSheet, isDark, ld, lineHtml, lineBack, lineSheet, undoReviewAnswer, manageSheet, monthsIn, newLineSheet, oneTimeSheet, overviewSheet, periodLabel, render, ruleMatches, ruleSheetHtml, savBalSheet, searchHits, searchResults, takePendingNew, txList } from './views.js';
+import { APP_VERSION, addUserRule, applyPalette, applyTheme, currentPalette, assign, budgetSheet, createLine, currentTheme, drillSheet, forgetView, goalSheet, isDark, ld, lineHtml, lineBack, lineSheet, undoReviewAnswer, debugSheet, manageSheet, monthsIn, newLineSheet, oneTimeSheet, overviewSheet, periodLabel, render, ruleMatches, ruleSheetHtml, savBalSheet, searchHits, searchResults, takePendingNew, txList } from './views.js';
 // ---------------- events ----------------
 // B40: no pinch zoom (iPhone and Mac Safari send gesture events; other browsers send ctrl + wheel).
 ['gesturestart', 'gesturechange'].forEach((ev) => document.addEventListener(ev, (e) => e.preventDefault(), { passive: false }));
@@ -197,6 +197,10 @@ document.addEventListener('click', async (e) => {
   else if (act === 'undo') { $('#toast').hidden = true; closeSheet(); await undo(); }
   else if (act === 'resetflags') { await change('One-time checks reset', (s) => { s.flagDismissed = {}; }); }
   else if (act === 'close') closeSheet();
+  else if (act === 'debuginfo') debugSheet();
+  else if (act === 'copydebug') { const ta = $('#dbg-text'); try { await navigator.clipboard.writeText(ta.value); } catch { ta.select(); try { document.execCommand('copy'); } catch { /* the text stays selected */ } } toast('Copied'); }
+  else if (act === 'revselect') { state.reviewSel = state.reviewSel ? null : new Set(); render(); }
+  else if (act === 'tripoffer-no') { (state.tripOfferNo ||= new Set()).add(`${state.tripOffer.from}|${state.tripOffer.to}`); render(); }
   else if (act === 'goreview') { closeSheet(); state.tab = 'review'; render(); }
   else if (act === 'wipe') {
     if (!(await ask({ title: 'Erase everything on this device?', text: 'All bookings, statements, rules and answers on this device are removed. Your vault in Google Drive is not touched.', ok: 'Erase', danger: true }))) return;
@@ -233,6 +237,11 @@ function pickRulesFile() {
 document.addEventListener('change', async (e) => {
   const t = e.target;
   if (t.dataset.act === 'import' && t.files.length) { await importFiles([...t.files]); t.value = ''; return; }
+  if (t.dataset.revtick !== undefined) { // I86: tick a shop
+    if (!state.reviewSel) return;
+    if (t.checked) state.reviewSel.add(t.dataset.revtick); else state.reviewSel.delete(t.dataset.revtick);
+    render(); return;
+  }
   if (t.dataset.ldtick !== undefined) { // I69: tick bookings of a line to move them
     if (t.checked) ld.sel.add(t.dataset.ldtick); else ld.sel.delete(t.dataset.ldtick);
     const mv = $('#ld-move'); if (mv) { const n = ld.sel.size; mv.disabled = !n; mv.textContent = n ? `Move ${n} booking${n === 1 ? '' : 's'}…` : 'Tick bookings to move them'; }
@@ -267,6 +276,26 @@ document.addEventListener('submit', async (e) => {
   e.preventDefault();
   const f = e.target; const fd = new FormData(f);
   if (f.dataset.act === 'addentry') { await saveEntry(fd); return; }
+  if (f.dataset.act === 'revapply') { // I86: one line for every ticked shop
+    const line = fd.get('line'); const keys = [...(state.reviewSel || [])]; if (!line || !keys.length) return;
+    const all = !!fd.get('all'); const byV = {}; for (const t of state.agg.review) (byV[t.vkey] ||= []).push(t);
+    await change(`${keys.length} shop${keys.length === 1 ? '' : 's'} moved to ${lineLabel(line)}`, (s) => {
+      for (const k of keys) {
+        const ts = byV[k] || []; if (!ts.length) continue;
+        if (all) { s.vendorRules[k] = line; for (const t of ts) delete s.txRules[t.id]; } else for (const t of ts) s.txRules[t.id] = line;
+        state.reviewDone = [...state.reviewDone.filter((d) => d.vkey !== k), { vkey: k, txId: ts[0].id, line, vendor: ts[0].vendor, label: lineLabel(line), all }];
+      }
+    });
+    state.reviewSel = null; render(); return;
+  }
+  if (f.dataset.act === 'tripoffer') { // I85: create the trip and put its waiting bookings on it
+    const name = fd.get('name').trim(); const from = fd.get('from'), to = fd.get('to');
+    if (to < from) { toast('The trip ends before it starts.'); return; }
+    if ((state.settings.trips || []).some((x) => x.name === name)) { toast('A trip with this name exists already.'); return; }
+    const ids = (state.tripOffer ? state.tripOffer.ids : []).filter((id) => { const t = txById(id); return t && t.date >= from && t.date <= to; });
+    await change(`Trip "${name}" added`, (s) => { s.trips.push({ name, from, to, scope: 'all' }); for (const id of ids) s.txRules[id] = `trip:${name}`; });
+    return;
+  }
   if (f.dataset.act === 'addtrip') {
     if (fd.get('to') < fd.get('from')) { toast('The trip ends before it starts.'); return; }
     const trip = { name: fd.get('name').trim(), from: fd.get('from'), to: fd.get('to'), scope: fd.get('all') ? 'all' : 'dining' };
@@ -347,6 +376,11 @@ document.addEventListener('keydown', (e) => {
   // A file picker dressed as a button (a label around a hidden file input): Enter and Space open it too.
   const fb = (e.key === 'Enter' || e.key === ' ') && e.target.closest && e.target.closest('label[role=button]');
   if (fb) { const inp = fb.querySelector('input[type=file]'); if (inp) { e.preventDefault(); inp.click(); return; } }
+  // I74: on the Review tab, keys 1 to 3 pick the first suggested line of the shop on top
+  if (/^[1-3]$/.test(e.key) && state.tab === 'review' && !state.reviewSel && !e.metaKey && !e.ctrlKey && !e.altKey && !/^(INPUT|TEXTAREA|SELECT)$/.test((e.target && e.target.tagName) || '') && $('#sheet').hidden && $('#dialog').hidden) {
+    const card = [...document.querySelectorAll('#main section.card')].find((c) => c.querySelector('button[data-suggest]'));
+    const btn = card && card.querySelectorAll('button[data-suggest]')[+e.key - 1]; if (btn) { e.preventDefault(); btn.click(); return; }
+  }
   if (e.key !== 'Escape') return;
   if (dialogDone) dialogDone(null); else if (!$('#sheet').hidden) closeSheet();
 });

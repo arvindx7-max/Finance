@@ -5,7 +5,7 @@
 
 export const SECTIONS = {
   income: 'Earned income', fixed: 'Fixed / recurring', variable: 'Variable expenses', onetime: 'One-time items',
-  abroad: 'Transfers abroad', passthrough: 'Forwarded transfers',
+  abroad: 'Transfers abroad', recv: 'Received from abroad', passthrough: 'Forwarded transfers',
   tosav: 'Moved to savings', fromsav: 'Top-ups from savings', offset: 'Offsetting pairs', wallet: 'Moved to wallet',
 };
 // Sections a user can pick when creating a new line.
@@ -54,6 +54,7 @@ export const BASE_LINES = [
   L('in.benefit', 'income', 'Child benefit', 'Benefits'),
 
   L('ab.transfer', 'abroad', 'Transfer abroad', 'Transfers abroad'),
+  L('ab.received', 'recv', 'Received from abroad', 'Transfers abroad'),
   L('pt.in', 'passthrough', 'Received to forward', 'Transfers abroad'),
   L('pt.sav', 'passthrough', 'From savings, forwarded', 'Transfers abroad'),
   L('sv.out', 'tosav', 'Moved to savings account', 'Savings movements'),
@@ -323,6 +324,7 @@ export function aggregate(txs, settings) {
   const p0 = settings.profile;
   const oldRulesFile = !!p0 && p0.catalog !== CATALOG && ((p0.rules || []).some((r) => !r.mine) || (p0.lines || []).some((l) => !String(l.id).startsWith('c.')));
   const review = rows.filter((t) => !t.line && !isOrphan(t));
+  const reviewShops = new Set(review.map((t) => t.vkey)).size; // B64: Review asks one question per shop
   // Possible one-time items: a variable booking far above what is usual for its line.
   const flags = [];
   const byLine = {};
@@ -345,7 +347,7 @@ export function aggregate(txs, settings) {
   const inUse = {}; for (const t of rows) if (t.line) inUse[lineMeta(t.line).sec] = true;
   inUse.savings = !!(inUse.tosav || inUse.fromsav);
   inUse.cashTracked = settings.cash === 'track';
-  return { inUse, rows, months, cell, order, summary, review, unknownLine, orphanCount, oldRulesFile, flags, passFlags };
+  return { inUse, rows, months, cell, order, summary, review, unknownLine, orphanCount, oldRulesFile, flags, passFlags, reviewShops };
 }
 
 // Running-balance reconciliation: every statement must tie on its own and chain to the previous one.

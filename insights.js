@@ -76,7 +76,7 @@ export function recurring(agg) {
     const amounts = txs.map((t) => -t.amount); const lastAmt = amounts[amounts.length - 1];
     let change = null;
     if (!multi && amounts.length >= 3) { const [a, b, c] = amounts.slice(-3); if (Math.abs(a - b) < 0.01 && Math.abs(c - b) > Math.max(0.5, b * 0.01)) change = { from: b, to: c, date: txs[txs.length - 1].date }; }
-    return { label, last: lastAmt, lastDate: txs[txs.length - 1].date, monthly: r2(total / span), yearly: r2(total / span * 12), isNew: first === last && agg.months.length > 1, change, multi, count: txs.length };
+    return { label, line: txs[0].line, last: lastAmt, lastDate: txs[txs.length - 1].date, monthly: r2(total / span), yearly: r2(total / span * 12), isNew: first === last && agg.months.length > 1, change, multi, count: txs.length };
   }).sort((a, b) => b.yearly - a.yearly);
   return { items, yearly: r2(sum(items.map((i) => i.yearly))) };
 }
@@ -154,7 +154,7 @@ export function upcoming(agg) {
     const multi = lastMonthTx.length > 1; // several charges in the latest month (e.g. DB extras)
     const amount = multi ? r2(sum(lastMonthTx.map((t) => -t.amount))) : -ts[ts.length - 1].amount;
     const day = multi ? null : +ts[ts.length - 1].date.slice(8, 10);
-    items.push({ label: lineLabel(line), amount: r2(amount), day, every: gap, multi });
+    items.push({ label: lineLabel(line), line, amount: r2(amount), day, every: gap, multi });
   }
   items.sort((a, b) => (a.day ?? 99) - (b.day ?? 99));
   return { month: target, items, total: r2(sum(items.map((i) => i.amount))) };
