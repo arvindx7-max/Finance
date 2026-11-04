@@ -195,6 +195,7 @@ export function buildWorkbook(agg, recon, settings) {
   const abroadB = block(secIds('abroad'), 'Sent abroad (gross)');
   const ptB = secIds('passthrough').length ? (() => { bar('LESS: RECEIVED TO FORWARD ABROAD (not your money)'); return block(secIds('passthrough'), 'Pass-through'); })() : null;
 
+  const recvB = secIds('recv').length ? (() => { bar('RECEIVED FROM ABROAD (not counted as income)'); return block(secIds('recv'), 'Received from abroad'); })() : null;
   bar('SAVINGS MOVEMENTS (internal)');
   const toB = block(secIds('tosav'), 'Moved to savings');
   const fromB = block(secIds('fromsav'), 'Top-ups back from savings');
@@ -229,7 +230,7 @@ export function buildWorkbook(agg, recon, settings) {
   const tot = (k) => agg.summary.reduce((a2, x) => a2 + x[k], 0);
   const hasU = agg.summary.some((x) => Math.abs(x.unassigned) > 0.004);
   const rowU = hasU ? put('Bookings still in Review (net)', S_('unassigned'), () => null, [S.text, S.num]) : null;
-  const net = (c) => `(${colL(c)}${toB.row}-${colL(c)}${fromB.row})`; const kept = (c) => `(${colL(c)}${rowSav}-${net(c)}${rowU ? `+${colL(c)}${rowU}` : ''})`;
+  const net = (c) => `(${colL(c)}${toB.row}-${colL(c)}${fromB.row})`; const kept = (c) => `(${colL(c)}${rowSav}-${net(c)}${rowU ? `+${colL(c)}${rowU}` : ''}${recvB ? `+${colL(c)}${recvB.row}` : ''})`;
   const nT = tot('netToSav'), kT = tot('kept');
   put('Net moved to savings (moved − top-ups)', S_('movedIn'), (c) => `MAX(0,${net(c)})`, [S.text, S.num], { v: Math.max(0, nT), f: (c) => `MAX(0,${net(c)})` });
   if (agg.summary.some((s) => s.takenBack) || nT < 0) put('Taken back from savings, net', S_('takenBack'), (c) => `MAX(0,-${net(c)})`, [S.text, S.num], { v: Math.max(0, -nT), f: (c) => `MAX(0,-${net(c)})` });

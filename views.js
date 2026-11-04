@@ -10,10 +10,11 @@ import { DEVICE, isPhone, lockCard } from './security.js';
 import { demoStartView, emptyView, lockedView } from './start.js';
 import { MOTIONS, SPEEDS, afterRender, beforeRender, motion, reducedMotion, resetMotion } from './motion.js';
 import { pdfStatements } from './io.js';
-import { suggestLines } from './suggest.js';
+import { sameShop, suggestLines, tripOffer } from './suggest.js';
+import { debugInfo } from './debug.js';
 import { cashCard, entryTag, isManual, walletCard } from './entries.js';
 // ---------------- insights tab ----------------
-export const APP_VERSION = 'v21.1';
+export const APP_VERSION = 'v21.2';
 export const pct = (x) => `${Math.round(x * 100)}%`;
 export function bar(ratio, tone) { const w = Math.min(100, Math.max(0, ratio * 100)); return `<span class="pbar ${tone}"><i style="width:${w.toFixed(1)}%"></i></span>`; }
 export function insightsView() {
@@ -38,12 +39,12 @@ export function insightsView() {
   const r = I.recurring(a);
   const recHtml = !r.items.length ? '' : `<section class="card wide"><h2>Recurring costs and subscriptions</h2>
     <p class="fine">About <b>${eur(r.yearly)}</b> a year, ${eur(r.yearly / 12)} a month on average.</p>
-    <ul class="rec">${r.items.map((i) => `<li><div><b>${h(i.label)}</b><small>${i.multi ? 'several charges a month' : `last ${eur(i.last)} on ${deDate(i.lastDate)}`}</small>${i.change ? `<em class="flag ${i.change.to > i.change.from ? 'up' : 'down'}">Price ${i.change.to > i.change.from ? 'up' : 'down'}: ${eur(i.change.from)} → ${eur(i.change.to)}</em>` : ''}${i.isNew ? '<em class="flag new">New</em>' : ''}</div><span class="num">${eur(i.yearly)}<small>/year</small></span></li>`).join('')}</ul></section>`;
+    <ul class="rec">${r.items.map((i) => `<li><div><b>${i.line ? `<button class="linkname" data-line="${h(i.line)}">${h(i.label)}</button>` : h(i.label)}</b><small>${i.multi ? 'several charges a month' : `last ${eur(i.last)} on ${deDate(i.lastDate)}`}</small>${i.change ? `<em class="flag ${i.change.to > i.change.from ? 'up' : 'down'}">Price ${i.change.to > i.change.from ? 'up' : 'down'}: ${eur(i.change.from)} → ${eur(i.change.to)}</em>` : ''}${i.isNew ? '<em class="flag new">New</em>' : ''}</div><span class="num">${eur(i.yearly)}<small>/year</small></span></li>`).join('')}</ul></section>`;
   // upcoming
   const u = I.upcoming(a);
   const upHtml = u.month ? `<section class="card"><h2>Coming up in ${h(monthLabel(u.month))}</h2>
     <p class="fine">Fixed payments expected: <b>${eur(u.total)}</b>. Keep at least this in the account on the 1st.</p>
-    <ul class="upc">${u.items.map((i) => `<li><span class="day num">${i.day ? `${i.day}.` : '—'}</span><span>${h(i.label)}${i.every > 1 ? ` <small>every ${i.every} months</small>` : ''}${i.multi ? ' <small>several charges</small>' : ''}</span><b class="num">${eur(i.amount)}</b></li>`).join('')}</ul></section>` : '';
+    <ul class="upc">${u.items.map((i) => `<li><span class="day num">${i.day ? `${i.day}.` : '—'}</span><span>${i.line ? `<button class="linkname" data-line="${h(i.line)}">${h(i.label)}</button>` : h(i.label)}${i.every > 1 ? ` <small>every ${i.every} months</small>` : ''}${i.multi ? ' <small>several charges</small>' : ''}</span><b class="num">${eur(i.amount)}</b></li>`).join('')}</ul></section>` : '';
   // fees
   const f = I.fees(a, ms); const anyFee = I.fees(a, a.months).total > 0;
   const feeHtml = !anyFee ? '' : `<section class="card"><h2>Bank and card fees <small>${label}</small></h2>
@@ -156,9 +157,10 @@ export function searchHits() {
 
 // ---------------- render ----------------
 export function render() {
+  if (state.tab !== 'review') state.reviewSel = null; // I86
   if (state.tab !== 'review' && state.reviewDone.length) state.reviewDone = []; // I68: answered rows only last while Review is open
   document.querySelectorAll('.tabbar button').forEach((b) => b.setAttribute('aria-current', b.dataset.tab === state.tab ? 'page' : 'false'));
-  const n = state.agg.review.length + state.agg.flags.length + state.agg.passFlags.length;
+  const n = state.agg.reviewShops + state.agg.flags.length + state.agg.passFlags.length; // B64: shops to answer, not bookings
   $('#review-badge').textContent = n; $('#review-badge').hidden = !n;
   const main = $('#main');
   // The start screens (locked, demo start, welcome) use the whole screen: no tab bar, no side bar.
@@ -441,7 +443,7 @@ export function monthsView() {
   const seg = `<div class="seg" role="tablist">${SEG.filter(([k]) => k !== 'onetime' || U.onetime).map(([k, l]) => `<button role="tab" aria-selected="${state.section === k}" data-section="${k}">${l}</button>`).join('')}</div>`;
   if (state.section === 'search') return topbar('Months', 'Search') + seg + searchView();
   const a = state.agg;
-  const secs = state.section === 'income' ? ['income', 'abroad', 'passthrough', 'tosav', 'fromsav', 'wallet'] : [state.section];
+  const secs = state.section === 'income' ? ['income', 'abroad', 'recv', 'passthrough', 'tosav', 'fromsav', 'wallet'] : [state.section];
   const ls = a.order.filter((l) => secs.includes(l.sec));
   // B52: months with nothing in this section are skipped (Data > "Skip months with nothing in them"); totals still cover every month.
   // B63: on the Income tab the totals underneath also count: a month with spending but no income is not empty.
@@ -450,11 +452,11 @@ export function monthsView() {
   const ms = [...a.months].filter((m) => !state.settings.skipEmptyMonths || hasAny(m)).reverse(); // newest month first
   let group = null;
   const groupOf = (l) => (state.section === 'variable' ? l.group : state.section === 'income' ? (l.sec === 'income' ? 'Earned income' : SECTIONS[l.sec]) : '');
-  const signOf = (l) => (['income', 'passthrough', 'fromsav'].includes(l.sec) ? 1 : -1);
+  const signOf = (l) => (['income', 'recv', 'passthrough', 'fromsav'].includes(l.sec) ? 1 : -1);
   const last6 = [...ms].reverse().slice(-6);
   const groupTrend = (g) => last6.map((m) => ls.filter((l) => groupOf(l) === g).reduce((x, l) => x + signOf(l) * (a.cell[`${l.id}|${m}`]?.amt || 0), 0));
   const rows = ls.map((l) => {
-    const sign = ['income', 'passthrough', 'fromsav'].includes(l.sec) ? 1 : -1;
+    const sign = ['income', 'recv', 'passthrough', 'fromsav'].includes(l.sec) ? 1 : -1;
     const g = state.section === 'variable' ? l.group : state.section === 'income' ? (l.sec === 'income' ? 'Earned income' : SECTIONS[l.sec]) : '';
     let bar = '';
     if (g && g !== group) {
@@ -520,7 +522,7 @@ export function searchResults() {
 // Tap a line name in Months: one sheet with that line over time. Bookings are moved by ticking them; never all at once.
 export const ld = { line: null, month: null, sel: new Set(), moving: false, all: false };
 const LD_CAP = 20; // long lines show the 20 most recent bookings first
-const ldSign = (sec) => (['income', 'passthrough', 'fromsav'].includes(sec) ? 1 : -1);
+const ldSign = (sec) => (['income', 'recv', 'passthrough', 'fromsav'].includes(sec) ? 1 : -1);
 export function lineSheet(id) { ld.line = id; ld.month = null; ld.all = false; ld.sel = new Set(); ld.moving = false; sheet(lineHtml(), lineHtml); }
 export function lineBack() { ld.moving = false; sheet(lineHtml(), lineHtml); }
 export function lineHtml() {
@@ -550,6 +552,15 @@ export function lineHtml() {
   return `<h2>${h(meta.label)}</h2><p class="ld-sub">${h(SECTIONS[meta.sec] || '')}${meta.group ? ` · ${h(meta.group)}` : ''} · ${rows.length} booking${rows.length === 1 ? '' : 's'}</p>
   ${rows.length ? `<div class="ld-bars" role="group" aria-label="Amount per month">${months.map((m, i) => `<button class="${m === sel ? 'on' : ''}" data-ldmonth="${m}" aria-pressed="${m === sel}" aria-label="${h(monthLabel(m))}: ${eur(sums[i])}"><i style="height:${Math.max(2, Math.abs(sums[i]) / max * 100).toFixed(0)}%"></i>${h(monthLabel(m, true))}</button>`).join('')}</div>
   <div class="ld-stats"><div><b>${eur(avg)}</b><span>Average per month</span></div><div><b>${eur(hi)}</b><span>Highest: ${h(monthLabel(hiM, true))}</span></div><div><b>${eur(last)}</b><span>${h(monthLabel(lastM, true))}, ${Math.abs(diff) < 0.005 ? 'same as average' : `${diff > 0 ? '+' : '−'}${eur(Math.abs(diff))} vs average`}</span></div></div>
+  ${(() => { // I72: what feeds this line
+    const st = state.settings; const gone = st.manualGone || {};
+    const vk = live(st.vendorRules).filter(([, v]) => v === meta.id).map(([k]) => k);
+    const names = vk.map((k) => (state.agg.rows.find((t) => t.vkey === k) || {}).vendor).filter(Boolean).slice(0, 4);
+    const nt = live(st.txRules).filter(([id, v]) => v === meta.id && !gone[id]).length;
+    const kr = ((st.profile || {}).rules || []).filter((x) => x.line === meta.id).length;
+    const li = [vk.length ? `<li><span><b>${vk.length} vendor answer${vk.length === 1 ? '' : 's'}</b><small>${h(names.join(', '))}${vk.length > names.length ? ' …' : ''}</small></span></li>` : '', kr ? `<li><span><b>${kr} keyword rule${kr === 1 ? '' : 's'}</b></span></li>` : '', nt ? `<li><span><b>${nt} single-booking answer${nt === 1 ? '' : 's'}</b></span></li>` : ''].join('');
+    return `<div class="ld-feed"><h3>What feeds this line</h3>${li ? `<ul class="manage">${li}</ul>` : '<p class="fine">Only the built-in rules put bookings here.</p>'}</div>`;
+  })()}
   <div class="ld-head"><h3>${sel ? `${h(monthLabel(sel))} · ${shown.length} booking${shown.length === 1 ? '' : 's'}` : `All months · ${shown.length} booking${shown.length === 1 ? '' : 's'}`}</h3>${sel ? '<button class="link" data-ldmonth="">Show all months</button>' : ''}</div>
   <ul class="ld-list">${Object.entries(byMonth).map(([m, ts]) => `${sel ? '' : `<li class="ld-month"><h4>${h(monthLabel(m))}</h4></li>`}${ts.map((t) => `<li${trip ? ' class="notick"' : ''}>${trip ? '' : `<input type="checkbox" data-ldtick="${h(t.id)}" aria-label="Select ${h(t.vendor)}, ${deDate(t.date)}"${ld.sel.has(t.id) ? ' checked' : ''}>`}<div><b>${h(t.vendor)}</b><span>${deDate(t.date)}</span></div><strong>${eur(sign * t.amount)}</strong></li>`).join('')}`).join('')}</ul>${listed.length < shown.length ? `<button class="btn ld-all" data-act="ldall">Show all ${shown.length} bookings</button>` : ''}` : '<p class="fine">No bookings on this line yet.</p>'}
   ${trip ? '<p class="fine">Trip lines follow the trip dates in Settings, so their bookings are not moved from here.</p>' : ''}<div class="ld-actions">${trip ? '' : `<button class="btn primary" id="ld-move" data-act="ldmovego"${ld.sel.size ? '' : ' disabled'}>${ld.sel.size ? `Move ${ld.sel.size} booking${ld.sel.size === 1 ? '' : 's'}…` : 'Tick bookings to move them'}</button>`}${own ? `<button class="btn" data-renline="${h(meta.id)}">Rename</button>` : ''}<button class="btn" data-act="close">Close</button></div>`;
@@ -560,7 +571,7 @@ const ownBank = (t) => { const o = state.agg.rows.find((x) => x.id === t.ownPair
 export function lineOptions(selected) {
   const trips = (state.settings.trips || []).map((t) => ({ id: `trip:${t.name}`, sec: 'variable', label: lineLabel(`trip:${t.name}`) }));
   const L = [...lines(), ...trips];
-  const order = ['fixed', 'variable', 'onetime', 'income', 'abroad', 'passthrough', 'tosav', 'fromsav', 'offset', 'wallet'];
+  const order = ['fixed', 'variable', 'onetime', 'income', 'abroad', 'recv', 'passthrough', 'tosav', 'fromsav', 'offset', 'wallet'];
   const used = new Set((state.agg ? state.agg.rows : []).map((t) => t.line)); used.add(selected);
   const opt = (l) => `<option value="${h(l.id)}"${l.id === selected ? ' selected' : ''}>${h(l.label)}</option>`;
   const mine = order.map((sec) => { const ls = L.filter((l) => l.sec === sec && used.has(l.id)); return ls.length ? `<optgroup label="${h(SECTIONS[sec])}">${ls.map(opt).join('')}</optgroup>` : ''; }).join('');
@@ -571,10 +582,13 @@ export function lineOptions(selected) {
 export function txList(txs, allDefault = false, review = false) {
   return `<ul class="txs">${[...txs].sort((x, y) => y.date.localeCompare(x.date)).map((t) => {
     // I68: in Review, up to three suggested lines are one tap; the full list stays under "Other line…"
-    const sug = review && !t.line ? suggestLines(t, state.agg.rows, 8).filter((id) => lineMeta(id)).slice(0, 3) : [];
+    const grp = review ? state.agg.review.filter((x) => x.vkey === t.vkey) : [t]; // I73: all of this shop's bookings, not only the one shown
+    const same = review && !t.line ? sameShop(t, state.agg.rows, (id) => (lineMeta(id) || {}).sec) : null; // I84
+    const sug = review && !t.line ? suggestLines(t, state.agg.rows, 8, grp).filter((id) => lineMeta(id) && !(same && id === same.line)).slice(0, 3) : [];
     return `<li>
     <div><b>${h(t.vendor)}</b><span>${deDate(t.date)}${t.cardDate && t.cardDate !== t.date ? ` · paid ${deDate(t.cardDate)}` : ''}${entryTag(t)}${t.ownPair ? ` · between your own accounts${ownBank(t) ? ` (${h(ownBank(t))})` : ''}` : ''}${t.bank ? ` · ${h(t.bank)}` : ''}</span></div>
     <strong class="${t.amount < 0 ? '' : 'pos'}">${eur(t.amount)}</strong>
+    ${same && lineMeta(same.line) ? `<div class="sugg"><span class="lbl">Looks like a shop you already answered</span><div class="chips"><button class="same" data-suggest="${h(same.line)}" data-sugtx="${h(t.id)}">Same shop as “${h(same.vendor)}” · ${h(lineLabel(same.line))}</button></div></div>` : ''}
     ${sug.length ? `<div class="sugg"><span class="lbl">Suggested</span><div class="chips">${sug.map((id) => `<button data-suggest="${h(id)}" data-sugtx="${h(t.id)}">${h(lineLabel(id))}</button>`).join('')}</div></div>` : ''}
     <div class="fgroup">
       <label class="frow"><span>Line</span><select data-txline="${h(t.id)}">${t.line ? '' : `<option value="" selected>${sug.length ? 'Other line…' : 'Choose a line…'}</option>`}${lineOptions(t.line)}</select></label>
@@ -664,8 +678,26 @@ export function reviewView() {
   const byV = {};
   for (const t of r) (byV[t.vkey] ||= []).push(t);
   const nV = Object.keys(byV).length; const total = state.reviewDone.length + nV;
-  return `${topbar('Review')}${rf}${passHtml}${r.length ? `<section class="pad"><h1 class="h1">Unknown vendors${total > 1 ? ` <span class="rv-count" aria-label="${state.reviewDone.length + 1} of ${total}">${state.reviewDone.length + 1} of ${total}</span>` : ''}</h1><p class="fine">Pick a line once; with "Apply to every booking" ticked, the app uses it for this vendor from now on.</p></section>
-  ${done}${Object.values(byV).map((ts) => `<section class="card">${txList(ts.slice(0, 1), true, true)}${ts.length > 1 ? `<p class="fine">${ts.length} bookings from this vendor: ${ts.map((t) => eur(t.amount)).join(', ')}</p>` : ''}</section>`).join('')}` : done}
+  // I85: card payments abroad that look like one trip
+  const offer = r.length && !state.reviewSel ? tripOffer(r, state.agg.rows, state.settings.trips || []) : null;
+  state.tripOffer = offer && !(state.tripOfferNo || new Set()).has(`${offer.from}|${offer.to}`) ? offer : null;
+  const place = (() => { try { return state.tripOffer ? new Intl.DisplayNames(['en'], { type: 'region' }).of(state.tripOffer.country) : ''; } catch { return ''; } })();
+  const tripHtml = state.tripOffer ? `<section class="card tripoffer"><h2>Looks like a trip</h2><p class="fine">${state.tripOffer.ids.length} card payments abroad between ${deDate(state.tripOffer.from)} and ${deDate(state.tripOffer.to)} are waiting in Review. Create a trip so they are counted as trip spending?</p>
+    <form class="stack" data-act="tripoffer"><div class="fgroup"><label class="frow"><span>Trip name</span><input type="text" name="name" value="${h(place ? `Trip to ${place}` : 'Trip abroad')}" required maxlength="40"></label>
+    <label class="frow"><span>From</span><input type="date" name="from" value="${state.tripOffer.from}" required></label><label class="frow"><span>To</span><input type="date" name="to" value="${state.tripOffer.to}" required></label></div>
+    <button class="btn primary">Create trip and use it</button></form><button class="link" data-act="tripoffer-no">Not now</button></section>` : '';
+  // I86: tick several shops and give them one line together
+  const sel = state.reviewSel;
+  const selHtml = () => {
+    const keys = Object.keys(byV); const nb = [...sel].reduce((x, k) => x + (byV[k] ? byV[k].length : 0), 0);
+    return `<section class="card"><ul class="txs">${keys.map((k) => { const ts = byV[k]; const tot = ts.reduce((x, t) => x + t.amount, 0); return `<li class="revpick${sel.has(k) ? ' on' : ''}"><div><label class="chk"><input type="checkbox" data-revtick="${h(k)}" data-n="${ts.length}"${sel.has(k) ? ' checked' : ''}> <b>${h(ts[0].vendor)}</b></label><span>${deDate(ts[0].date)} · ${ts.length} booking${ts.length === 1 ? '' : 's'}</span></div><strong class="${tot < 0 ? '' : 'pos'}">${eur(tot)}</strong></li>`; }).join('')}</ul></section>
+    <div id="rev-apply"><form class="card stack" data-act="revapply"${sel.size ? '' : ' hidden'}><label class="frow"><span id="rev-lbl">One line for the ${sel.size} ticked shop${sel.size === 1 ? '' : 's'}</span><select name="line" required><option value="">Choose a line…</option>${lineOptions('').replace(/<optgroup label="Something else">.*?<\/optgroup>/s, '')}</select></label>
+    <label class="frow sw"><span>Apply to every booking<small>Use it for these shops from now on</small></span><input type="checkbox" name="all" class="switch" checked></label>
+    <button class="btn primary" id="rev-btn">Apply to ${sel.size} shop${sel.size === 1 ? '' : 's'} (${nb} booking${nb === 1 ? '' : 's'})</button><p class="fine">Can be undone with Undo.</p></form><p class="fine pad" id="rev-hint"${sel.size ? ' hidden' : ''}>Tick the shops that belong to the same line.</p></div>`;
+  };
+  const selBtn = r.length && nV > 1 ? `<section class="pad"><button class="btn" data-act="revselect">${sel ? 'Cancel' : 'Select several'}</button></section>` : '';
+  return `${topbar('Review')}${rf}${passHtml}${r.length ? `<section class="pad"><h1 class="h1">Unknown vendors${total > 1 ? ` <span class="rv-count" aria-label="${state.reviewDone.length + 1} of ${total}">${state.reviewDone.length + 1} of ${total}</span>` : ''}</h1><p class="fine"><b>${nV} shop${nV === 1 ? '' : 's'} to answer · ${r.length} booking${r.length === 1 ? '' : 's'}.</b> Pick a line once; with "Apply to every booking" ticked, the app uses it for this vendor from now on.</p></section>
+  ${selBtn}${tripHtml}${done}${sel ? selHtml() : Object.values(byV).map((ts) => `<section class="card">${txList(ts.slice(0, 1), true, true)}${ts.length > 1 ? `<p class="fine">${ts.length} bookings from this vendor: ${ts.map((t) => eur(t.amount)).join(', ')}</p>` : ''}</section>`).join('')}` : done}
   ${f.length ? `<section class="pad"><h1 class="h1">Possible one-time items</h1><p class="fine">These are at least three times the usual amount for their line.</p></section>
   ${f.map((t) => `<section class="card flag"><div><b>${h(t.vendor)}</b><span>${deDate(t.date)} · ${h(lineLabel(t.line))} · usually around ${eur(t.median)}</span></div><strong>${eur(t.amount)}</strong>
     <div class="row"><button class="btn primary" data-onetime="${h(t.id)}">One-time…</button><button class="btn" data-dismiss="${h(t.id)}">Regular spend</button></div></section>`).join('')}` : ''}`;
@@ -691,6 +723,7 @@ export function dataView() {
     <p class="fine">PDF Kontoauszug or CSV export. Overlapping files are fine: bookings already stored are skipped.${WIDE.matches ? ' On the Mac you can also drop files anywhere on this window.' : ''}</p>
     <label class="btn primary">Choose files<input type="file" accept=".pdf,.csv,.json,application/pdf,text/csv,application/json" multiple data-act="import" hidden></label>
   </section>${cloudCard()}
+  <section class="card"><h2>Help with a problem</h2><p class="fine">Copies a description of what the app shows, with names, shops, dates and exact amounts replaced, so you can paste it to Claude or Gemini without real data.</p><button class="btn" data-act="debuginfo">Copy anonymised debug info</button></section>
   <section class="card">
     <h2>Your rules and answers</h2>
     <p class="fine">${s.profile ? `${(s.profile.rules || []).length} rules from your rules file, ` : 'No rules file loaded, '}${nAns} answer${nAns === 1 ? '' : 's'} from Review, ${own} line${own === 1 ? '' : 's'} you created. All of it lives only on your devices, in your encrypted vault, your backups and the exported rules file.</p>
@@ -803,3 +836,10 @@ export function showImportReport(r) {
     <button class="btn" data-act="close">Done</button>`);
 }
 
+
+// I60: the text is shown first, then copied with one tap
+export function debugSheet() {
+  sheet(`<h2>Copy anonymised debug info</h2><p class="fine">Names, shops, dates and exact amounts are replaced. Nothing leaves this device until you paste it somewhere.</p>
+    <textarea id="dbg-text" class="dbg" readonly rows="12">${h(debugInfo(APP_VERSION))}</textarea>
+    <button class="btn primary" data-act="copydebug">Copy</button><button class="btn" data-act="close">Close</button>`);
+}
