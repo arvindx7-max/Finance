@@ -200,7 +200,7 @@ document.addEventListener('click', async (e) => {
   else if (act === 'debuginfo') debugSheet();
   else if (act === 'copydebug') { const ta = $('#dbg-text'); try { await navigator.clipboard.writeText(ta.value); } catch { ta.select(); try { document.execCommand('copy'); } catch { /* the text stays selected */ } } toast('Copied'); }
   else if (act === 'revselect') { state.reviewSel = state.reviewSel ? null : new Set(); render(); }
-  else if (act === 'tripoffer-no') { (state.tripOfferNo ||= new Set()).add(`${state.tripOffer.from}|${state.tripOffer.to}`); render(); }
+  else if (act === 'tripoffer-no') { if (!state.tripOffer) return; (state.tripOfferNo ||= new Set()).add(`${state.tripOffer.from}|${state.tripOffer.to}`); render(); }
   else if (act === 'goreview') { closeSheet(); state.tab = 'review'; render(); }
   else if (act === 'wipe') {
     if (!(await ask({ title: 'Erase everything on this device?', text: 'All bookings, statements, rules and answers on this device are removed. Your vault in Google Drive is not touched.', ok: 'Erase', danger: true }))) return;
@@ -240,7 +240,15 @@ document.addEventListener('change', async (e) => {
   if (t.dataset.revtick !== undefined) { // I86: tick a shop
     if (!state.reviewSel) return;
     if (t.checked) state.reviewSel.add(t.dataset.revtick); else state.reviewSel.delete(t.dataset.revtick);
-    render(); return;
+    // Update in place (no full render) so keyboard and screen-reader focus stays on the checkbox.
+    const li = t.closest('li'); if (li) li.classList.toggle('on', t.checked);
+    const n = state.reviewSel.size, form = $('form[data-act=revapply]'), hint = $('#rev-hint');
+    if (!form || !hint) { render(); return; }
+    const nb = [...document.querySelectorAll('[data-revtick]')].filter((c) => c.checked).reduce((x, c) => x + (+c.dataset.n || 0), 0);
+    form.hidden = !n; hint.hidden = !!n;
+    $('#rev-lbl').textContent = `One line for the ${n} ticked shop${n === 1 ? '' : 's'}`;
+    $('#rev-btn').textContent = `Apply to ${n} shop${n === 1 ? '' : 's'} (${nb} booking${nb === 1 ? '' : 's'})`;
+    return;
   }
   if (t.dataset.ldtick !== undefined) { // I69: tick bookings of a line to move them
     if (t.checked) ld.sel.add(t.dataset.ldtick); else ld.sel.delete(t.dataset.ldtick);
